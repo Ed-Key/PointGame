@@ -1,39 +1,25 @@
-# events/events.py
+# hand_drawing_challenge/events/events.py
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any
 from .types import GameEventType
-from hand_drawing_challenge.services.patterns.models import Pattern
-from hand_drawing_challenge.engine.state_machine import GameState
 
-@dataclass(frozen=True)
+@dataclass
 class BaseEvent:
+    """Base class for all game events."""
     type: GameEventType
+    data: Any = None
 
-@dataclass(frozen=True)
-class GameStateChangedEvent(BaseEvent):
-    new_state: GameState
-    old_state: Optional[GameState] = None
-    type: GameEventType = GameEventType.GAME_STARTED
+@dataclass
+class InputEvent(BaseEvent):
+    """Event for input-related updates."""
+    pass
 
-@dataclass(frozen=True)
-class ModeChangedEvent(BaseEvent):
-    new_mode: str
-    old_mode: Optional[str] = None
-    type: GameEventType = GameEventType.GAME_MODE_SELECTED
+@dataclass
+class GameStateEvent(BaseEvent):
+    """Event for game state changes."""
+    pass
 
-@dataclass(frozen=True)
+@dataclass
 class ScoreEvent(BaseEvent):
+    """Event for score updates."""
     score: int
-    player_id: Optional[str] = None
-    type: GameEventType = GameEventType.SCORE_UPDATED
-
-@dataclass(frozen=True)
-class PatternGeneratedEvent(BaseEvent):
-    pattern: Pattern
-    type: GameEventType = GameEventType.PATTERN_GENERATED
-
-@dataclass(frozen=True)
-class PatternCompletedEvent(BaseEvent):
-    pattern: Pattern
-    score: float
-    type: GameEventType = GameEventType.PATTERN_COMPLETED

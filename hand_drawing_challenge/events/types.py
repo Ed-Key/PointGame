@@ -22,20 +22,14 @@ class GameEventType(Enum):
     # Menu events
     GAME_MODE_SELECTED = auto()
     MENU_BACK = auto()
-    
+
     # Turn management events
     TURN_STARTED = auto()
     TURN_ENDED = auto()
     PLAYER_ADDED = auto()
-    
+
     # Score events
     SCORE_UPDATED = auto()
     PATTERN_COMPLETED = auto()
-
-    # Pattern events
-    PATTERN_GENERATED = auto()  # New pattern is generated/selected
-    PATTERN_DISPLAY_UPDATED = auto()  # Pattern display needs updating
-    PATTERN_VALIDATION_STARTED = auto()  # Start validating a drawn pattern
-    PATTERN_VALIDATION_COMPLETED = auto()  # Pattern validation is complete
 
 EventHandler = Callable[[GameEventType, Any], None]
