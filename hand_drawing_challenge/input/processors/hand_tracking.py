@@ -44,7 +44,10 @@ class HandTrackingProcessor(InputProcessor):
         self.event_bus = event_bus
         self.config = config
         self._active = False
+
+        # Processing state
         self._processing_enabled = False
+        self._camera_initialized = False
         
         # State tracking
         self.hand_detected = False
@@ -55,21 +58,35 @@ class HandTrackingProcessor(InputProcessor):
         self.event_bus.subscribe(GameEventType.DRAWING_STARTED, self._handle_drawing_event)
         self.event_bus.subscribe(GameEventType.DRAWING_ENDED, self._handle_drawing_event)
         
-        # Camera reference
+        # Initialize camera and MediaPipe Hands
         self.camera = None
-
-        # Setup MediaPipe Hands
-        self.logger.debug("Creating mp.solutions.hands.Hands() with detection/tracking confidence")
+        self.hands = None
         self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            min_detection_confidence=config.min_detection_confidence,
-            min_tracking_confidence=config.min_tracking_confidence
-        )
+
+        # Initialize camera on startup
+        self._initialize_camera()
+        self._initialize_mediapipe()
+    
+    def _initialize_mediapipe(self) -> bool:
+        """Initialize MediaPipe hands."""
+        try:
+            if self.hands is None:
+                self.logger.debug("Creating MediaPipe Hands instance")
+                self.hands = self.mp_hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=1,
+                    min_detection_confidence=self.config.min_detection_confidence,
+                    min_tracking_confidence=self.config.min_tracking_confidence
+                )
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to initialize MediaPipe: {e}")
+            return False
 
     def _initialize_camera(self) -> None:
         """Initialize the camera but don't start it yet"""
+        if self._camera_initialized:
+            return True
         try:
             self.logger.info(f"Attempting to open camera {self.config.camera_id}")
             self.camera = cv2.VideoCapture(self.config.camera_id)
@@ -104,6 +121,8 @@ class HandTrackingProcessor(InputProcessor):
                 self.camera.release()
                 self.camera = None
 
+            self._camera_initialized = True
+
         except Exception as e:
             self.logger.error(f"Exception opening camera: {e}")
             if self.camera:
@@ -115,56 +134,63 @@ class HandTrackingProcessor(InputProcessor):
         return bool(self._active and self.camera and self.camera.isOpened())
 
     def start(self) -> None:
-        """Start the processor and initialize camera resources."""
-        print(">>> hand_tracking_processor.py: start() called")
-        self.logger.info("HandTrackingProcessor.start() invoked")
-
-        # Attempt camera init if not done yet
-        if self.camera is None or not self.camera.isOpened():
+        """Start the processor."""
+        self.logger.info("Starting hand tracking processor")
+        if not self._camera_initialized:
             self._initialize_camera()
-        
-        # If camera is good, mark active
-        if self.camera and self.camera.isOpened():
-            self._active = True
-            self.logger.info("Hand tracking processor started successfully")
-            print(">>> Camera opened successfully!")
-        else:
-            self.logger.error("Camera not available; cannot start.")
-            print(">>> Camera NOT opened; check logs...")
+        if not self.hands:
+            self._initialize_mediapipe()
+
+        self._active = True
+        self.logger.info("Hand tracking processor started successfully")
 
     def stop(self) -> None:
-        """Stop the processor and release camera resources."""
-        self.logger.info("Stopping HandTrackingProcessor")
-        self._active = False
-        if self.camera is not None:
-            self.camera.release()
-        self.cleanup()
+        """Stop processing but keep camera alive."""
+        self.logger.info("Stopping hand tracking processing")
+        self._processing_enabled = False
+        self.hand_detected = False
+        self.last_position = None
+
+        # Reset MediaPipe but keep camera
+        if self.hands:
+            self.hands.close()
+            self.hands = None
 
     def cleanup(self) -> None:
-        """Clean up hand resources."""
+        """Final cleanup - only called when application exits."""
+        self.logger.info("Cleaning up hand tracking processor")
         try:
-            if hasattr(self, 'hands') and self.hands:
+            if self.hands:
                 self.hands.close()
                 self.hands = None
-            if hasattr(self, 'camera') and self.camera:
+            
+            if self.camera:
                 self.camera.release()
                 self.camera = None
-
-            self._active = False
+            
+            self._camera_initialized = False
             self._processing_enabled = False
-
+            self.hand_detected = False
+            self.last_position = None
+            
         except Exception as e:
-                self.logger.warning(f"Error during cleanup: {e}")
+            self.logger.error(f"Error during cleanup: {e}")
     
     def enable_processing(self) -> None:
-        """Enable processing."""
-        self.logger.info("Hand Tracking processing enabled")
+        """Enable frame processing."""
+        self.logger.info("Enabling hand tracking processing")
+        if not self.hands:
+            self._initialize_mediapipe()
         self._processing_enabled = True
 
     def disable_processing(self) -> None:
-        """Disable processing."""
-        self.logger.info("Hand Tracking processing disabled")
+        """Disable frame processing but keep camera alive."""
+        self.logger.info("Disabling hand tracking processing")
         self._processing_enabled = False
+        if self.hand_detected:
+            self.hand_detected = False
+            self.last_position = None
+            self.event_bus.publish(GameEventType.HAND_LOST)
     
     def process(self, *args: Any, **kwargs: Any) -> Optional[np.ndarray]:
         """Process the current frame and update hand tracking state.
@@ -173,64 +199,28 @@ class HandTrackingProcessor(InputProcessor):
             The camera frame (with debug overlays if draw_debug=True),
             or None if the camera read fails or not active.
         """
-        if not self._active or not self._processing_enabled:
+        if not self._camera_initialized or not self._processing_enabled:
             return None
             
         try:
             success, frame = self.camera.read()
             if not success or frame is None:
                 return None
-                
+            
             if self.config.mirror_camera:
                 frame = cv2.flip(frame, 1)
             
-            # Process frame with MediaPipe
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = self.hands.process(rgb_frame)
-            
-            # Process hand landmarks
-            if results.multi_hand_landmarks:
-                if not self.hand_detected:
-                    self.hand_detected = True
-                    self.event_bus.publish(GameEventType.HAND_DETECTED)
+            # Only process hand detection if enabled
+            if self._processing_enabled and self.hands:
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = self.hands.process(rgb_frame)
                 
-                # Get index fingertip position (landmark 8)
-                landmarks = results.multi_hand_landmarks[0].landmark
-                index_tip = landmarks[8]
+                # Update hand tracking state and publish events
+                self._process_hand_detection(results, frame.shape[:2])
                 
-                # Convert to pixel coordinates
-                h, w = frame.shape[:2]
-                x = int(index_tip.x * w)
-                y = int(index_tip.y * h)
-                
-                # Update position with smoother transitions
-                self.last_position = (x, y)
-                
-                # Create and publish hand point
-                hand_point = HandPoint(
-                    x=index_tip.x,
-                    y=index_tip.y,
-                    z=index_tip.z
-                )
-                
-                # Publish position update with additional context
-                self.event_bus.publish(
-                    GameEventType.HAND_POSITION_UPDATED,
-                    {
-                        "position": hand_point,
-                        "is_drawing": self.is_drawing,
-                        "frame_dimensions": (w, h)
-                    }
-                )
-            else:
-                if self.hand_detected:
-                    self.hand_detected = False
-                    self.last_position = None
-                    self.event_bus.publish(GameEventType.HAND_LOST)
-            
-            # Draw debug visualization if enabled
-            if self.config.draw_debug:
-                frame = self._draw_debug(frame, results)
+                # Draw debug visualization if enabled
+                if self.config.draw_debug:
+                    frame = self._draw_debug(frame, results)
             
             return frame
             
@@ -238,16 +228,47 @@ class HandTrackingProcessor(InputProcessor):
             self.logger.error(f"Error processing frame: {e}")
             return None
     
+    def _process_hand_detection(self, results: Any, frame_shape: Tuple[int, int]) -> None:
+        """Process hand detection results and publish events."""
+        h, w = frame_shape
+        
+        if results.multi_hand_landmarks:
+            if not self.hand_detected:
+                self.hand_detected = True
+                self.event_bus.publish(GameEventType.HAND_DETECTED)
+            
+            landmarks = results.multi_hand_landmarks[0].landmark
+            index_tip = landmarks[8]
+            
+            x = int(index_tip.x * w)
+            y = int(index_tip.y * h)
+            self.last_position = (x, y)
+            
+            # Create and publish hand point event
+            hand_point = HandPoint(x=index_tip.x, y=index_tip.y, z=index_tip.z)
+            self.event_bus.publish(
+                GameEventType.HAND_POSITION_UPDATED,
+                {
+                    "position": hand_point,
+                    "is_drawing": self.is_drawing,
+                    "frame_dimensions": (w, h)
+                }
+            )
+        else:
+            if self.hand_detected:
+                self.hand_detected = False
+                self.last_position = None
+                self.event_bus.publish(GameEventType.HAND_LOST)
+
+
     def _draw_debug(self, frame: np.ndarray, results: Any) -> np.ndarray:
-        """Draw debug info (only index finger tip) on the BGR frame."""
+        """Draw debug visualization on the frame."""
         debug_frame = frame.copy()
-        if results and results.multi_hand_landmarks:
-            # Only draw index finger tip (landmark 8)
+        if results.multi_hand_landmarks:
             if self.last_position:
-                # Convert normalized coordinates to pixel coordinates for drawing
                 h, w = frame.shape[:2]
-                x = int(self.last_position[0] * w)
-                y = int(self.last_position[1] * h)
+                x = int(self.last_position[0])
+                y = int(self.last_position[1])
                 color = (0, 255, 0) if self.is_drawing else (0, 0, 255)
                 cv2.circle(debug_frame, (x, y), 5, color, -1)
         return debug_frame
