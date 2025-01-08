@@ -1,18 +1,22 @@
-# services/pattern_manager.py
+# hand_drawing_challenge/services/pattern_manager.py
+
 from typing import List, Optional, Tuple
 from .patterns.models import Pattern, Point
 from .patterns.generator import PatternGenerator
 from .patterns.renderer import PatternRenderer
 from ..events.bus import EventBus
-from ..events.events import PatternGeneratedEvent, PatternCompletedEvent
 from ..events.types import GameEventType
+from ..events.events import PatternGeneratedEvent, PatternCompletedEvent
 
 class PatternManager:
-    """
-    Service class that manages pattern generation, validation, and scoring.
-    Integrates with the event system to communicate pattern states.
-    """
+    """Service class that manages pattern generation, validation, and scoring."""
+    
     def __init__(self, event_bus: EventBus):
+        """Initialize the pattern manager.
+        
+        Args:
+            event_bus: Event bus for communication
+        """
         self._event_bus = event_bus
         self._generator = PatternGenerator()
         self._renderer = PatternRenderer()
@@ -20,41 +24,40 @@ class PatternManager:
         self._current_difficulty = 1
     
     def initialize(self) -> None:
-        """Initialize the pattern manager"""
-        # Any initial setup, like loading patterns from files if needed
-        pass
+        """Initialize the pattern manager."""
+        self._generator._initialize_basic_patterns()
     
     def get_next_pattern(self) -> Pattern:
-        """Get the next pattern based on current difficulty"""
-        # Get patterns for current difficulty
+        """Get the next pattern based on current difficulty."""
         patterns = self._generator.get_patterns_by_difficulty(self._current_difficulty)
-        if not patterns:
-            # If no patterns found for difficulty, use square as fallback
-            self._current_pattern = self._generator.get_pattern("square")
-        else:
-            # Use first pattern from the list
-            self._current_pattern = patterns[0]
+        self._current_pattern = patterns[0] if patterns else self._generator.get_pattern("square")
         
-        # Notify system that a new pattern is ready
-        self._event_bus.publish(PatternGeneratedEvent(type=GameEventType.PATTERN_GENERATED, pattern=self._current_pattern))
+        # Create and publish event
+        event = PatternGeneratedEvent(pattern=self._current_pattern)
+        self._event_bus.publish(GameEventType.PATTERN_GENERATED, event)
+        
         return self._current_pattern
     
     def get_guide_points(self) -> List[Tuple[float, float]]:
-        """Get guide points for the current pattern"""
+        """Get guide points for the current pattern."""
         if self._current_pattern:
             return self._renderer.get_guide_points(self._current_pattern)
         return []
     
     def get_expected_path(self) -> List[Tuple[float, float]]:
-        """Get expected path points for the current pattern"""
+        """Get expected path points for the current pattern."""
         if self._current_pattern:
             return self._renderer.get_expected_path(self._current_pattern)
         return []
     
     def validate_drawing(self, drawing_points: List[Tuple[float, float]]) -> float:
-        """
-        Validate a drawing against the current pattern
-        Returns a score between 0 and 1
+        """Validate a drawing against the current pattern.
+        
+        Args:
+            drawing_points: List of points from user's drawing
+            
+        Returns:
+            float: Score between 0 and 1
         """
         if not self._current_pattern or not drawing_points:
             return 0.0
@@ -65,14 +68,19 @@ class PatternManager:
         
         score = 0.5  # Placeholder score
         
-        # Notify system about pattern completion
-        self._event_bus.publish(PatternCompletedEvent(self._current_pattern, score))
+        # Create and publish event
+        event = PatternCompletedEvent(
+            pattern=self._current_pattern,
+            score=score
+        )
+        self._event_bus.publish(GameEventType.PATTERN_COMPLETED, event)
+        
         return score
     
     def increase_difficulty(self) -> None:
-        """Increase the pattern difficulty"""
+        """Increase the pattern difficulty."""
         self._current_difficulty = min(self._current_difficulty + 1, 3)
     
     def reset_difficulty(self) -> None:
-        """Reset pattern difficulty to default"""
+        """Reset pattern difficulty to default."""
         self._current_difficulty = 1

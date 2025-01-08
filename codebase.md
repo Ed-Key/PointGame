@@ -1,3 +1,45 @@
+# .gitignore
+
+```
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+```
+
 # .pytest_cache\.gitignore
 
 ```
@@ -41,7 +83,12 @@ See [the docs](https://docs.pytest.org/en/stable/how-to/cache.html) for more inf
   "HDG/test_game.py": true,
   "HDG/test_harness.py": true,
   "HDG/tests/test_competitive_mode.py": true,
-  "HDG/tests/test_ui/test_canvas.py": true
+  "HDG/tests/test_ui/test_canvas.py": true,
+  "hand_drawing_challenge/tests/test_engine/test_game_engine.py": true,
+  "hand_drawing_challenge/tests/test_engine/test_game_startup.py": true,
+  "hand_drawing_challenge/tests/test_engine/test_menu_startup.py": true,
+  "hand_drawing_challenge/tests/test_events/test_application.py": true,
+  "hand_drawing_challenge/tests/test_ui/test_manager.py": true
 }
 ```
 
@@ -57,6 +104,14 @@ See [the docs](https://docs.pytest.org/en/stable/how-to/cache.html) for more inf
   "hand_drawing_challenge/tests/test_engine/test_game_engine.py::test_event_subscription",
   "hand_drawing_challenge/tests/test_engine/test_game_engine.py::test_handle_game_end",
   "hand_drawing_challenge/tests/test_engine/test_game_engine.py::test_initialization",
+  "hand_drawing_challenge/tests/test_engine/test_game_startup.py::test_application_starts_with_menu",
+  "hand_drawing_challenge/tests/test_engine/test_game_startup.py::test_full_startup_sequence",
+  "hand_drawing_challenge/tests/test_engine/test_game_startup.py::test_menu_handles_events",
+  "hand_drawing_challenge/tests/test_engine/test_game_startup.py::test_menu_mode_cleanup_on_stop",
+  "hand_drawing_challenge/tests/test_engine/test_menu_startup.py::test_engine_starts_with_menu_mode",
+  "hand_drawing_challenge/tests/test_engine/test_menu_startup.py::test_menu_mode_buttons_positioned",
+  "hand_drawing_challenge/tests/test_engine/test_menu_startup.py::test_menu_mode_initialization",
+  "hand_drawing_challenge/tests/test_engine/test_menu_startup.py::test_menu_mode_registers_events",
   "hand_drawing_challenge/tests/test_engine/test_state_machine.py::test_add_state",
   "hand_drawing_challenge/tests/test_engine/test_state_machine.py::test_change_state",
   "hand_drawing_challenge/tests/test_engine/test_state_machine.py::test_initial_state",
@@ -318,91 +373,176 @@ class GameConfig:
 
 ```py
 import time
+import logging
+import pygame
 from typing import Optional
+from .config import GameConfig
 from ..events.bus import EventBus
 from ..events.types import GameEventType
 from ..engine.game_engine import GameEngine
+from ..ui.manager import UIManager
+from ..engine.modes.menu_mode import MenuMode
 
 class GameApplication:
-    """
-    Main application class that coordinates game components and manages the game lifecycle.
+    """Main application class that coordinates game components."""
     
-    The GameApplication class serves as the central coordinator, initializing and managing
-    core components like the event bus, game engine, input manager, and UI manager.
-    """
-    
-    def __init__(self):
-        """Initialize the game application and its core components."""
-        self.event_bus = EventBus()
-        self.engine = GameEngine(self.event_bus)
+    def __init__(self, config: Optional[GameConfig] = None):
+        """Initialize the game application."""
+        logging.basicConfig(level=logging.INFO)
+        self.logger = logging.getLogger(__name__)
         
-        self.is_running = False
-        self.last_update = None
-        
-        # Register for shutdown events
-        self.event_bus.subscribe(GameEventType.GAME_ENDED, self._handle_game_end)
+        try:
+            self.logger.info("Initializing game application")
+            
+            # Initialize core systems
+            self.config = config or GameConfig()
+            self.event_bus = EventBus()
+            
+            # Initialize pygame
+            pygame.init()
+            pygame.font.init()
+            
+            # Initialize UI manager first (will create input manager)
+            self.ui_manager = UIManager(self.event_bus, self.config.screen_size)
+            
+            # Initialize engine with UI manager
+            self.engine = GameEngine(self.event_bus, self.ui_manager)
+
+            self.ui_manager.start_input_processing()
+
+            
+            # Application state
+            self.is_running = False
+            self.last_update = None
+            self.clock = pygame.time.Clock()
+            
+            # Register for events
+            self.event_bus.subscribe(GameEventType.GAME_ENDED, self._handle_game_end)
+            self.event_bus.subscribe(GameEventType.GAME_MODE_SELECTED, self._handle_mode_selected)
+            
+        except Exception as e:
+            self.logger.critical(f"Failed to initialize game application: {e}")
+            self.cleanup()
+            raise
     
     def start(self, test_mode: bool = False) -> None:
-        """
-        Start the game application and initialize all components.
-        
-        This method initializes the game engine, input processing, and UI systems.
-        It also starts the main game loop.
-
-        Args:
-            test_mode: Whether to run in test mode (skips game loop for testing)
-        """
+        """Start the game application."""
         if self.is_running:
             return
             
         try:
+            self.logger.info("Starting game application")
             self.is_running = True
             self.last_update = time.time()
             
-            # Initialize engine and publish start event
+            # Initialize engine
             self.engine.initialize()
-            self.event_bus.publish(GameEventType.GAME_STARTED)
             
             # Main game loop
             if not test_mode:
                 while self.is_running:
-                    # Calculate delta time
-                    current_time = time.time()
-                    delta_time = current_time - self.last_update
-                    self.last_update = current_time
+                    self._process_frame()
+                    self.clock.tick(self.config.fps)
                     
-                    # Update game state through engine
-                    self.engine.update(delta_time)
-                
         except Exception as e:
-            print(f"Error in game loop: {e}")
+            self.logger.error(f"Error in game loop: {e}")
             self.stop()
+            
+        finally:
+            self.cleanup()
+    
+    def _process_frame(self) -> None:
+        """Process a single frame of the game loop."""
+        try:
+            # Process all pygame events
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.stop()
+                    return
+                # Let current mode handle the event
+                if self.engine.current_mode:
+                    self.engine.current_mode.handle_input(event)
+
+            # Calculate delta time
+            current_time = time.time()
+            delta_time = current_time - self.last_update
+            self.last_update = current_time
+            
+            # Update engine and UI components
+            self.engine.update(delta_time)
+            
+            # Update UI and display
+            if not isinstance(self.engine.current_mode, MenuMode):
+                self.ui_manager.update(delta_time)
+                self.ui_manager.render()
+            
+            # Update display
+            pygame.display.flip()
+            
+        except Exception as e:
+            self.logger.error(f"Error processing frame: {e}")
+            # Continue running unless critical error
+    
+    def _handle_mode_selected(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
+        """Handle game mode selection event."""
+        try:
+            mode = data.get("mode")
+            if mode:
+                # Stop input processing if we're returning to menu
+                if mode == "menu":
+                    self.logger.info("Returning to menu, stopping input processing")
+                    self.ui_manager.stop_input_processing()
+                # Don't start input processing here - let the game mode handle it
+        except Exception as e:
+            self.logger.error(f"Error handling mode selection: {e}")
     
     def stop(self) -> None:
-        """
-        Stop the game application and cleanup resources.
-        
-        This method ensures all components are properly shutdown and resources
-        are released.
-        """
+        """Stop the game application."""
         if not self.is_running:
             return
             
         try:
+            self.logger.info("Stopping game application")
             self.is_running = False
             self.event_bus.publish(GameEventType.GAME_ENDED)
+            self.ui_manager.stop_input_processing()
+            
         except Exception as e:
-            print(f"Error during shutdown: {e}")
+            self.logger.error(f"Error during shutdown: {e}")
+            
+        finally:
+            self.cleanup()
+    
+    def cleanup(self) -> None:
+        """Clean up application resources."""
+        try:
+            self.logger.info("Cleaning up resources")
+            
+            # Clean up subsystems
+            if hasattr(self, 'event_bus'):
+                self.event_bus.clear_subscribers()
+            
+            if hasattr(self, 'ui_manager'):
+                self.ui_manager.cleanup()
+            
+            if hasattr(self, 'engine'):
+                self.engine.cleanup()
+            
+            # Quit pygame
+            pygame.quit()
+            
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
     
     def _handle_game_end(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
-        """
-        Handle game end event.
-        
-        Args:
-            event_type: The type of event (should be GAME_ENDED)
-            data: Optional data associated with the game end
-        """
+        """Handle game end event."""
+        self.logger.info("Handling game end event")
         self.is_running = False
+    
+    def get_fps(self) -> float:
+        """Get current frames per second."""
+        return self.clock.get_fps()
+
 ```
 
 # hand_drawing_challenge\engine\__init__.py
@@ -426,67 +566,196 @@ __all__ = [
 
 ```py
 # hand_drawing_challenge/engine/game_engine.py
-from typing import Optional, Dict, Type
+
+import logging
+from typing import Optional, Dict, Any
 from ..events.bus import EventBus
 from ..events.types import GameEventType
-from .state_machine import GameStateMachine, GameState, State
+from .state_machine import GameStateMachine, GameState
+from .modes.menu_mode import MenuMode
+from .modes.single_player import SinglePlayerMode
+from .modes.competitive import CompetitiveMode
 from .modes.base_mode import GameMode
+from ..ui.manager import UIManager
 
 class GameEngine:
-    """Core game engine that coordinates states and modes."""
+    """Core game engine that coordinates states and modes.
     
-    def __init__(self, event_bus: EventBus):
+    The GameEngine is responsible for:
+    - Managing game states through a state machine
+    - Handling transitions between game modes
+    - Coordinating event communication
+    - Updating game logic
+    
+    Attributes:
+        event_bus (EventBus): Central event bus for communication
+        ui_manager (UIManager): Manager for UI components
+        state_machine (GameStateMachine): Manages game states
+        current_mode (Optional[GameMode]): Currently active game mode
+        is_running (bool): Whether the engine is currently running
+    """
+    
+    def __init__(self, event_bus: EventBus, ui_manager: UIManager):
         """Initialize the game engine.
         
         Args:
             event_bus: Central event bus for communication
+            ui_manager: Manager for UI components
         """
         self.event_bus = event_bus
+        self.ui_manager = ui_manager
         self.state_machine = GameStateMachine()
         self.current_mode: Optional[GameMode] = None
         self.is_running = False
         
+        # Initialize logging
+        self.logger = logging.getLogger(__name__)
+        
         # Register for events
         self.event_bus.subscribe(GameEventType.GAME_ENDED, self._handle_game_end)
+        self.event_bus.subscribe(GameEventType.GAME_MODE_SELECTED, self._handle_mode_selected)
     
     def initialize(self) -> None:
-        """Initialize the game engine and states."""
-        self.is_running = True
+        """Initialize the game engine and states.
+        
+        Sets up initial game state and starts in menu mode.
+        """
+        try:
+            self.logger.info("Initializing game engine")
+            self.is_running = True
+            
+            # Start with menu mode
+            self.change_mode(MenuMode(self.event_bus))
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize game engine: {e}")
+            self.is_running = False
+            raise
     
     def update(self, delta_time: float) -> None:
         """Update game state.
         
         Args:
-            delta_time: Time elapsed since last update
+            delta_time: Time elapsed since last update in seconds
         """
         if not self.is_running:
             return
             
-        # Update current state
-        self.state_machine.update(delta_time)
-        
-        # Update current game mode if active
-        if self.current_mode and self.current_mode.is_active:
-            self.current_mode.update(delta_time)
+        try:
+            # Update current game mode if active
+            if self.current_mode and self.current_mode.is_active:
+                self.current_mode.update(delta_time)
+                
+        except Exception as e:
+            self.logger.error(f"Error during game update: {e}")
+            # Don't stop the engine, but log the error
     
     def change_mode(self, mode: GameMode) -> None:
         """Change to a new game mode.
         
+        Handles cleanup of current mode and initialization of new mode.
+        
         Args:
             mode: New game mode to switch to
         """
-        if self.current_mode:
-            self.current_mode.stop()
+        try:
+            self.logger.info(f"Changing game mode to: {mode.__class__.__name__}")
             
-        self.current_mode = mode
-        self.current_mode.initialize()
-        self.current_mode.start()
+            # Stop current mode if it exists
+            if self.current_mode:
+                self.current_mode.stop()
+                
+            # Initialize and start new mode
+            self.current_mode = mode
+            self.current_mode.initialize()
+            self.current_mode.start()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to change game mode: {e}")
+            # Try to recover by returning to menu mode
+            self._recover_to_menu()
     
     def _handle_game_end(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
-        """Handle game end event."""
+        """Handle game end event.
+        
+        Stops the engine and current mode.
+        
+        Args:
+            event_type: Type of event (GAME_ENDED)
+            data: Optional event data
+        """
+        self.logger.info("Handling game end event")
         self.is_running = False
         if self.current_mode:
             self.current_mode.stop()
+    
+    def _handle_mode_selected(self, event_type: GameEventType, data: dict) -> None:
+        """Handle game mode selection.
+        
+        Creates and switches to the selected game mode.
+        
+        Args:
+            event_type: Type of event (GAME_MODE_SELECTED)
+            data: Contains the selected mode
+        """
+        try:
+            mode = data.get("mode")
+            self.logger.info(f"Mode selection received: {mode}")
+            
+            if mode == "single_player":
+                self.change_mode(SinglePlayerMode(self.event_bus, self.ui_manager))
+            elif mode == "competitive":
+                self.change_mode(CompetitiveMode(self.event_bus))
+            else:
+                self.logger.warning(f"Unknown game mode selected: {mode}")
+                
+        except Exception as e:
+            self.logger.error(f"Error handling mode selection: {e}")
+            self._recover_to_menu()
+    
+    def _recover_to_menu(self) -> None:
+        """Recovery method to return to menu mode in case of errors."""
+        try:
+            self.logger.info("Attempting recovery to menu mode")
+            self.change_mode(MenuMode(self.event_bus))
+        except Exception as e:
+            self.logger.critical(f"Failed to recover to menu mode: {e}")
+            self.is_running = False
+    
+    def cleanup(self) -> None:
+        """Clean up engine resources.
+        
+        Should be called before shutting down the game.
+        """
+        try:
+            self.logger.info("Cleaning up game engine resources")
+            if self.current_mode:
+                self.current_mode.stop()
+            self.event_bus.clear_subscribers()
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
+            
+    def get_current_state(self) -> Optional[GameState]:
+        """Get the current game state.
+        
+        Returns:
+            Optional[GameState]: Current state or None if not available
+        """
+        return self.state_machine.current_state if self.state_machine else None
+    
+    def _handle_menu_return(self, event_type: GameEventType, data: Any) -> None:
+        """Handle return to menu event.
+        
+        Args:
+            event_type: Type of event
+            data: Event data
+        """
+        try:
+            self.logger.info("Returning to menu")
+            self.change_mode(MenuMode(self.event_bus))
+        except Exception as e:
+            self.logger.error(f"Error returning to menu: {e}")
+            self._recover_to_menu()
 ```
 
 # hand_drawing_challenge\engine\modes\base_mode.py
@@ -541,6 +810,306 @@ class GameMode(ABC):
     def stop(self) -> None:
         """Stop the game mode and cleanup resources."""
         self.is_active = False
+```
+
+# hand_drawing_challenge\engine\modes\competitive.py
+
+```py
+# hand_drawing_challenge/engine/modes/competitive.py
+
+import pygame
+from typing import Any
+from .base_mode import GameMode
+from ...events.bus import EventBus
+from ...events.types import GameEventType
+
+class CompetitiveMode(GameMode):
+    """Placeholder implementation for competitive mode."""
+    
+    def __init__(self, event_bus: EventBus):
+        super().__init__(event_bus)
+        self.font = None
+        
+    def initialize(self) -> None:
+        """Initialize mode-specific resources."""
+        self.font = pygame.font.Font(None, 48)
+    
+    def update(self, delta_time: float) -> None:
+        """Update game state."""
+        if not self.is_active:
+            return
+            
+        # Draw placeholder screen
+        screen = pygame.display.get_surface()
+        if screen:
+            screen.fill((0, 0, 100))  # Dark blue background to distinguish from single player
+            
+            # Draw mode indicator
+            text = self.font.render("Competitive Mode", True, (255, 255, 255))
+            text_rect = text.get_rect(center=(screen.get_width() // 2, screen.get_height() // 2))
+            screen.blit(text, text_rect)
+            
+            # Draw instruction
+            instruction = self.font.render("Press ESC to return to menu", True, (200, 200, 200))
+            inst_rect = instruction.get_rect(centerx=screen.get_width() // 2, bottom=screen.get_height() - 50)
+            screen.blit(instruction, inst_rect)
+    
+    def handle_input(self, event: Any) -> None:
+        """Handle input events."""
+        if isinstance(event, pygame.event.Event):
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    # Return to menu
+                    self.event_bus.publish(GameEventType.GAME_ENDED)
+```
+
+# hand_drawing_challenge\engine\modes\menu_mode.py
+
+```py
+# hand_drawing_challenge/engine/modes/menu_mode.py
+
+import pygame
+from typing import Any
+from .base_mode import GameMode
+from ...events.bus import EventBus
+from ...events.types import GameEventType
+
+class MenuMode(GameMode):
+    """Menu mode implementation that follows the GameMode interface."""
+    
+    def __init__(self, event_bus: EventBus):
+        """Initialize menu mode."""
+        super().__init__(event_bus)
+        self.font_large = None
+        self.font_normal = None
+        
+        # Button rectangles for collision detection
+        self.single_player_rect = pygame.Rect(0, 0, 300, 60)
+        self.competitive_rect = pygame.Rect(0, 0, 300, 60)
+        self.buttons_initialized = False
+    
+    def initialize(self) -> None:
+        """Initialize mode-specific resources and state."""
+        self.font_large = pygame.font.Font(None, 74)
+        self.font_normal = pygame.font.Font(None, 48)
+        
+        if not self.buttons_initialized:
+            # Center the buttons
+            screen_rect = pygame.display.get_surface().get_rect()
+            center_x = screen_rect.centerx
+            center_y = screen_rect.centery
+            
+            # Position buttons
+            self.single_player_rect.centerx = center_x
+            self.single_player_rect.centery = center_y - 40
+            
+            self.competitive_rect.centerx = center_x
+            self.competitive_rect.centery = center_y + 40
+            
+            self.buttons_initialized = True
+    
+    def update(self, delta_time: float) -> None:
+        """Update menu state and handle input.
+        
+        Args:
+            delta_time: Time elapsed since last update in seconds
+        """
+        if not self.is_active:
+            return
+        
+        # Draw menu (in actual implementation, this should be handled by UI system)
+        screen = pygame.display.get_surface()
+        if screen:
+            self._draw(screen)
+    
+    def handle_input(self, event: Any) -> None:
+        """Handle input events.
+        
+        Args:
+            event: Input event to process
+        """
+        if not isinstance(event, pygame.event.Event):
+            return
+            
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            mouse_pos = pygame.mouse.get_pos()
+            if self.single_player_rect.collidepoint(mouse_pos):
+                self.event_bus.publish(GameEventType.GAME_MODE_SELECTED, {"mode": "single_player"})
+            elif self.competitive_rect.collidepoint(mouse_pos):
+                self.event_bus.publish(GameEventType.GAME_MODE_SELECTED, {"mode": "competitive"})
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self.event_bus.publish(GameEventType.GAME_ENDED)
+    
+    def _draw(self, screen: pygame.Surface) -> None:
+        """Draw the menu screen.
+        
+        Args:
+            screen: Pygame surface to draw on
+        """
+        # Draw background
+        screen.fill((0, 0, 0))
+        
+        # Draw title
+        title_text = self.font_large.render("Hand Drawing Game", True, (255, 255, 255))
+        title_rect = title_text.get_rect(centerx=screen.get_width() // 2, y=100)
+        screen.blit(title_text, title_rect)
+        
+        # Draw buttons
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # Single Player button
+        button_color = (100, 100, 255) if self.single_player_rect.collidepoint(mouse_pos) else (50, 50, 255)
+        pygame.draw.rect(screen, button_color, self.single_player_rect, border_radius=10)
+        text = self.font_normal.render("Single Player", True, (255, 255, 255))
+        text_rect = text.get_rect(center=self.single_player_rect.center)
+        screen.blit(text, text_rect)
+        
+        # Competitive button
+        button_color = (100, 100, 255) if self.competitive_rect.collidepoint(mouse_pos) else (50, 50, 255)
+        pygame.draw.rect(screen, button_color, self.competitive_rect, border_radius=10)
+        text = self.font_normal.render("Competitive", True, (255, 255, 255))
+        text_rect = text.get_rect(center=self.competitive_rect.center)
+        screen.blit(text, text_rect)
+```
+
+# hand_drawing_challenge\engine\modes\single_player.py
+
+```py
+# hand_drawing_challenge/engine/modes/single_player.py
+
+import logging
+import pygame
+from typing import Optional
+from ...events.bus import EventBus
+from ...events.types import GameEventType
+from ...services.pattern_manager import PatternManager
+from ...ui.manager import UIManager
+from .base_mode import GameMode
+
+class SinglePlayerMode(GameMode):
+    """Single player game mode implementation."""
+    
+    def __init__(self, event_bus: EventBus, ui_manager: UIManager):
+        """Initialize single player mode."""
+        print(">>> single_player.py: SinglePlayerMode.__init__() called")
+        print(f">>> single_player.py: SinglePlayerMode, ui_manager = {ui_manager}")
+        print(">>> single_player.py: SinglePlayerMode, ui_manager.input_manager =", ui_manager.input_manager)
+
+
+        super().__init__(event_bus)
+        self.ui_manager = ui_manager
+        self.logger = logging.getLogger(__name__)
+        self.pattern_manager = PatternManager(event_bus)
+        
+        # Game state
+        self.current_pattern = None
+        self.is_drawing = False
+        self.score = 0
+        self.round_count = 0
+        self.max_rounds = 5
+        
+        # Get component references
+        self.canvas = None
+        
+    def initialize(self) -> None:
+        """Initialize the single player mode."""
+        try:
+            self.logger.info("Initializing single player mode")
+            super().initialize()
+            
+            # Initialize pattern manager and get first pattern
+            self.pattern_manager.initialize()
+            self.current_pattern = self.pattern_manager.get_next_pattern()
+            
+            # Get UI component references
+            self.canvas = self.ui_manager.get_component('canvas')
+            if not self.canvas:
+                raise RuntimeError("Required UI components not found")
+            
+            # Reset game state
+            self.score = 0
+            self.round_count = 0
+            self.is_drawing = False
+            
+            # Clear canvas
+            self.canvas.clear()
+            
+        except Exception as e:
+            self.logger.error(f"Error initializing single player mode: {e}")
+            raise
+    
+    def update(self, delta_time: float) -> None:
+        """Update game state."""
+        if not self.is_active:
+            return
+            
+        try:
+            # Update UI components through UIManager
+            self.ui_manager.update(
+                delta_time=delta_time,
+                score=self.score,
+                game_state="Drawing" if self.is_drawing else "Ready",
+                is_drawing=self.is_drawing
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Error updating single player mode: {e}")
+    
+    def handle_input(self, event: pygame.event.Event) -> None:
+        """Handle input events."""
+        try:
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.event_bus.publish(GameEventType.MENU_BACK)
+                elif event.key == pygame.K_SPACE:
+                    self._toggle_drawing()
+                elif event.key == pygame.K_c:
+                    self._clear_canvas()
+                    
+        except Exception as e:
+            self.logger.error(f"Error handling input: {e}")
+    
+    def _toggle_drawing(self) -> None:
+        """Toggle drawing state."""
+        try:
+            if self.canvas:
+                self.is_drawing = not self.is_drawing
+                self.canvas.set_drawing_state(self.is_drawing)
+                
+                # Update hand tracking processor drawing state
+                hand_tracker = self.ui_manager.input_manager.get_processor("hand_tracking")
+                if hand_tracker:
+                    hand_tracker.set_drawing_state(self.is_drawing)
+                
+                # Publish appropriate event
+                event_type = GameEventType.DRAWING_STARTED if self.is_drawing else GameEventType.DRAWING_ENDED
+                self.event_bus.publish(event_type)
+        except Exception as e:
+            self.logger.error(f"Error toggling drawing state: {e}")
+    
+    def _clear_canvas(self) -> None:
+        """Clear the drawing canvas."""
+        if self.canvas:
+            self.canvas.clear()
+    
+    def start(self) -> None:
+        """Start the game mode."""
+        super().start()
+        self.logger.info("Starting single player mode")
+        
+        # Start input processing when entering single player mode
+        # self.ui_manager.start_input_processing()
+    
+    def stop(self) -> None:
+        """Stop the game mode."""
+        self.logger.info("Stopping single player mode")
+        
+        # Stop input processing when exiting single player mode
+        self.ui_manager.stop_input_processing()
+        
+        super().stop()
+
 ```
 
 # hand_drawing_challenge\engine\state_machine.py
@@ -726,31 +1295,50 @@ class EventBus:
 # hand_drawing_challenge\events\events.py
 
 ```py
-# hand_drawing_challenge/events/events.py
-from dataclasses import dataclass
-from typing import Any
+# events/events.py
+from dataclasses import dataclass, field
+from typing import Optional
 from .types import GameEventType
+from ..services.patterns.models import Pattern
 
 @dataclass
 class BaseEvent:
     """Base class for all game events."""
-    type: GameEventType
-    data: Any = None
-
-@dataclass
-class InputEvent(BaseEvent):
-    """Event for input-related updates."""
     pass
 
 @dataclass
-class GameStateEvent(BaseEvent):
+class GameStateChangedEvent(BaseEvent):
     """Event for game state changes."""
-    pass
+    new_state: str
+    old_state: Optional[str] = None
+    type: GameEventType = field(default=GameEventType.GAME_STARTED, init=False)
+
+@dataclass
+class ModeChangedEvent(BaseEvent):
+    """Event for game mode changes."""
+    new_mode: str
+    old_mode: Optional[str] = None
+    type: GameEventType = field(default=GameEventType.GAME_MODE_SELECTED, init=False)
 
 @dataclass
 class ScoreEvent(BaseEvent):
     """Event for score updates."""
     score: int
+    type: GameEventType = field(default=GameEventType.SCORE_UPDATED, init=False)
+    player_id: Optional[str] = None
+
+@dataclass
+class PatternGeneratedEvent(BaseEvent):
+    """Event for new pattern generation."""
+    pattern: Pattern
+    type: GameEventType = field(default=GameEventType.PATTERN_GENERATED, init=False)
+
+@dataclass
+class PatternCompletedEvent(BaseEvent):
+    """Event for pattern completion."""
+    pattern: Pattern
+    score: float
+    type: GameEventType = field(default=GameEventType.PATTERN_COMPLETED, init=False)
 ```
 
 # hand_drawing_challenge\events\interfaces.py
@@ -783,26 +1371,32 @@ class IEventBus(ABC):
 # hand_drawing_challenge\events\types.py
 
 ```py
-# src/events/types.py
+# hand_drawing_challenge/events/types.py
 
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Union
+from typing import Any, Callable
 
 class GameEventType(Enum):
     """Game event types for the event system."""
+    
     # Input events
     HAND_DETECTED = auto()
     HAND_LOST = auto()
     HAND_POSITION_UPDATED = auto()
     DRAWING_STARTED = auto()
     DRAWING_ENDED = auto()
-    CAMERA_FAILURE = auto()  # Added this event
+    CAMERA_FAILURE = auto()
+    INPUT_ERROR = auto()
 
     # Game state events
     GAME_STARTED = auto()
     GAME_PAUSED = auto()
     GAME_RESUMED = auto()
     GAME_ENDED = auto()
+
+    # Menu events
+    GAME_MODE_SELECTED = auto()
+    MENU_BACK = auto()
     
     # Turn management events
     TURN_STARTED = auto()
@@ -811,8 +1405,15 @@ class GameEventType(Enum):
     
     # Score events
     SCORE_UPDATED = auto()
+    
+    # Pattern events
+    PATTERN_GENERATED = auto()  # Added this event type
     PATTERN_COMPLETED = auto()
+    PATTERN_DISPLAY_UPDATED = auto()
+    PATTERN_VALIDATION_STARTED = auto()
+    PATTERN_VALIDATION_COMPLETED = auto()
 
+# Type alias for event handlers
 EventHandler = Callable[[GameEventType, Any], None]
 ```
 
@@ -880,29 +1481,29 @@ from .input_types import HandPoint
 @dataclass
 class DrawingConfig:
     """Configuration for drawing behavior."""
-    smoothing_window: int = 5
+    smoothing_window: int = 8
     max_jump_distance: int = 100  # Maximum allowed position change between frames
-    min_movement_threshold: int = 5  # Minimum movement to register a new point
-    max_points: int = 1000  # Maximum number of points to store in trail
+    min_movement_threshold: int = 6  # Minimum movement to register a new point
+    max_points: int = 10000  # Maximum number of points to store in trail
 
 class DrawingTracker:
     """
     Handles drawing input processing with smoothing and stability improvements.
-    
+
     Features:
     - Position smoothing using moving average
     - Jump detection to filter erratic movements
     - Minimum movement threshold to reduce jitter
     - Trail point management
     """
-    
-    def __init__(self, 
-                 width: int = 640, 
+
+    def __init__(self,
+                 width: int = 640,
                  height: int = 480,
                  config: Optional[DrawingConfig] = None):
         """
         Initialize the drawing tracker.
-        
+
         Args:
             width: Canvas width in pixels
             height: Canvas height in pixels
@@ -911,103 +1512,109 @@ class DrawingTracker:
         self.width = width
         self.height = height
         self.config = config or DrawingConfig()
-        
+
         # Position tracking
         self.position_history: Deque[Tuple[int, int]] = deque(
             maxlen=self.config.smoothing_window
         )
         self.last_valid_position: Optional[Tuple[int, int]] = None
-        
+
         # Trail management
         self.trail_points: List[Tuple[int, int]] = []
-        
-    def update(self, 
-              hand_point: Optional[HandPoint], 
+
+    def update(self,
+              position: Optional[Tuple[int, int]],
               is_drawing: bool) -> Optional[Tuple[int, int]]:
         """
         Update the drawing tracker with new hand position.
-        
+
         Args:
-            hand_point: New hand position from tracker
+            position: New hand position in pixel coordinates
             is_drawing: Whether currently in drawing mode
-            
+
         Returns:
             Current smoothed position or None if invalid
         """
         # Process new position
-        smoothed_position = self._smooth_position(hand_point)
+        smoothed_position = self._smooth_position(position)
         
-        if smoothed_position and is_drawing:
-            if self._should_add_point(smoothed_position):
-                self._add_trail_point(smoothed_position)
-        
+        if smoothed_position:
+            print(f">>> DrawingTracker: Got smoothed position {smoothed_position}, drawing={is_drawing}")
+            if is_drawing:
+                if self._should_add_point(smoothed_position):
+                    print(f">>> DrawingTracker: Adding point {smoothed_position} to trail")
+                    self._add_trail_point(smoothed_position)
+                    print(f">>> DrawingTracker: Trail now has {len(self.trail_points)} points")
+                else:
+                    print(">>> DrawingTracker: Point too close to previous, skipping")
+
         return smoothed_position
-    
-    def _smooth_position(self, hand_point: Optional[HandPoint]) -> Optional[Tuple[int, int]]:
+
+    def _smooth_position(self, position: Optional[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
         """
         Smooth the hand position using a moving average and validate movement.
-        
+
         Args:
-            hand_point: New hand position from tracker
-            
+            position: New position in pixel coordinates
+
         Returns:
             Smoothed and validated (x, y) position or None if invalid
         """
-        if hand_point is None:
+        if position is None:
             return self.last_valid_position
-            
-        # Convert normalized coordinates to pixel coordinates
-        x = int(hand_point.x * self.width)
-        y = int(hand_point.y * self.height)
-        
+
+        x, y = position
+
         # Validate position is within bounds
         if not (0 <= x < self.width and 0 <= y < self.height):
             return self.last_valid_position
-            
+
         # Check for unrealistic jumps if we have a previous position
         if self.last_valid_position:
             last_x, last_y = self.last_valid_position
             distance = np.sqrt((x - last_x)**2 + (y - last_y)**2)
             if distance > self.config.max_jump_distance:
                 return self.last_valid_position
-        
+
         # Add to position history
         self.position_history.append((x, y))
-        
+
         # Calculate smoothed position
         if len(self.position_history) >= 3:  # Need at least 3 points for stable smoothing
             x_smooth = int(np.mean([p[0] for p in self.position_history]))
             y_smooth = int(np.mean([p[1] for p in self.position_history]))
-            
+
             # Update last valid position
             self.last_valid_position = (x_smooth, y_smooth)
             return x_smooth, y_smooth
-            
+
         return x, y
-    
+
     def _should_add_point(self, new_position: Tuple[int, int]) -> bool:
         """
         Determine if a new point should be added to the trail.
-        
+
         Args:
             new_position: New smoothed position
-            
+
         Returns:
             True if point should be added, False otherwise
         """
         if not self.trail_points:
+            print(">>> DrawingTracker: First point, should add")
             return True
-            
+
         last_x, last_y = self.trail_points[-1]
         new_x, new_y = new_position
         distance = np.sqrt((new_x - last_x)**2 + (new_y - last_y)**2)
         
+        print(f">>> DrawingTracker: Distance to last point: {distance:.2f} pixels")
         return distance >= self.config.min_movement_threshold
-    
+
     def _add_trail_point(self, position: Tuple[int, int]) -> None:
         """
         Add a point to the trail, maintaining maximum length.
-        
+
         Args:
             position: Position to add to trail
         """
@@ -1018,7 +1625,7 @@ class DrawingTracker:
     def get_trail_points(self) -> List[Tuple[int, int]]:
         """
         Get the current trail points.
-        
+
         Returns:
             List of (x, y) coordinates making up the trail
         """
@@ -1029,20 +1636,20 @@ class DrawingTracker:
         self.trail_points.clear()
         self.position_history.clear()
         self.last_valid_position = None
-    
+
     def get_last_position(self) -> Optional[Tuple[int, int]]:
         """
         Get the last valid hand position.
-        
+
         Returns:
             Last valid (x, y) position or None if no position available
         """
         return self.last_valid_position
-    
+
     def get_drawing_metrics(self) -> dict:
         """
         Get metrics about the current drawing.
-        
+
         Returns:
             Dictionary containing:
             - point_count: Number of points in trail
@@ -1055,24 +1662,25 @@ class DrawingTracker:
                 'trail_length': 0,
                 'bounds': (0, 0, 0, 0)
             }
-            
+
         # Calculate trail length
         length = 0
         for i in range(1, len(self.trail_points)):
             x1, y1 = self.trail_points[i-1]
             x2, y2 = self.trail_points[i]
             length += np.sqrt((x2-x1)**2 + (y2-y1)**2)
-        
+
         # Calculate bounds
         points = np.array(self.trail_points)
         min_x, min_y = np.min(points, axis=0)
         max_x, max_y = np.max(points, axis=0)
-        
+
         return {
             'point_count': len(self.trail_points),
             'trail_length': int(length),
             'bounds': (int(min_x), int(min_y), int(max_x), int(max_y))
         }
+
 ```
 
 # hand_drawing_challenge\input\input_types.py
@@ -1146,11 +1754,17 @@ class InputProcessor(ABC):
 
 ```py
 # hand_drawing_challenge/input/manager.py
+import logging
 from typing import Dict, Optional
 import numpy as np
 from ..events.bus import EventBus
 from ..events.types import GameEventType
 from .interfaces import InputProcessor
+
+from hand_drawing_challenge.input.processors.hand_tracking import (
+    HandTrackingProcessor,
+    HandProcessorConfig
+)
 
 class InputManager:
     """Manages and coordinates multiple input processors."""
@@ -1159,16 +1773,31 @@ class InputManager:
         """Initialize input manager.
         
         Args:
-            event_bus: Event bus for publishing events
+            event_bus: Shared event bus for publishing events
         """
+
+        self.logger = logging.getLogger(__name__)
+        self.logger.info("Creating InputManager")
+
         self.event_bus = event_bus
         self.processors: Dict[str, InputProcessor] = {}
         self.is_processing = False
-        self.camera_id = camera_id
-        self.current_frame = None
+        self.current_frame: Optional[np.ndarray] = None
         
-        # Subscribe to game events
+        # Subscribe to game events 
         self.event_bus.subscribe(GameEventType.GAME_ENDED, self._handle_game_end)
+
+        self.logger.debug("Registering HandTrackingProcessor...")
+
+        config = HandProcessorConfig(
+            camera_width=640,
+            camera_height=480,
+            camera_id=0,
+            mirror_camera=True,
+            draw_debug=True
+        )
+        hand_tracker = HandTrackingProcessor(event_bus=self.event_bus, config=config)
+        self.register_processor("hand_tracking", hand_tracker)
     
     def register_processor(self, name: str, processor: InputProcessor) -> None:
         """Register an input processor.
@@ -1178,10 +1807,13 @@ class InputManager:
             processor: Input processor instance
         """
         if name in self.processors:
+            print(f">>> input/manager.py: Replacing existing processor {name}")
             # Clean up existing processor if being replaced
             self.unregister_processor(name)
             
+        self.logger.debug(f">>> input/manager.py: Registering processor '{name}': {processor}")
         self.processors[name] = processor
+        print(f">>> input/manager.py: Successfully registered processor {name}")
         
     def unregister_processor(self, name: str) -> None:
         """Remove an input processor.
@@ -1191,6 +1823,7 @@ class InputManager:
         """
         if name in self.processors:
             processor = self.processors[name]
+            self.logger.debug(f">>> input/manager.py: Unregistering processor '{name}' -> {processor}")
             processor.cleanup()
             del self.processors[name]
     
@@ -1207,13 +1840,19 @@ class InputManager:
     
     def start(self) -> None:
         """Start all registered processors."""
-        for processor in self.processors.values():
+        print(">>> input/manager.py: start() called")
+        print(f">>> input/manager.py: Starting {len(self.processors)} processors...")
+        for name, processor in self.processors.items():
+            print(f">>> input/manager.py: Starting processor {name}")
             processor.start()
 
     def stop(self) -> None:
         """Stop all registered processors."""
-        for processor in self.processors.values():
+        self.logger.debug("InputManager.stop() called")
+        for name, processor in self.processors.items():
+            self.logger.debug(f" -> .stop() on '{name}'")
             processor.stop()
+
         self.cleanup()
 
     def get_frame(self) -> Optional[np.ndarray]:
@@ -1225,25 +1864,21 @@ class InputManager:
         return self.current_frame
 
     def process_input(self) -> None:
-        """Process input from all active processors."""
+        """
+        Call .process() on each active processor to capture frames/handle input.
+        You might call this once per frame in the main game loop.
+        """
         if self.is_processing:
-            return  # Prevent recursive processing
-            
+            return  # Avoid re-entrant calls
+
+        self.is_processing = True
         try:
-            self.is_processing = True
-            for processor in self.processors.values():
+            for name, processor in self.processors.items():
                 if processor.is_active():
-                    try:
-                        result = processor.process()
-                        if result is not None:
-                            self.current_frame = result
-                    except Exception as e:
-                        print(f"Error in processor: {e}")
-                        # Optionally emit error event
-                        self.event_bus.publish(
-                            GameEventType.INPUT_ERROR,
-                            {"error": str(e)}
-                        )
+                    frame_result = processor.process()
+                    if frame_result is not None:
+                        # The "most recent" frame might come from the camera
+                        self.current_frame = frame_result
         finally:
             self.is_processing = False
     
@@ -1261,18 +1896,28 @@ class InputManager:
 # hand_drawing_challenge\input\processors\hand_tracking.py
 
 ```py
-# hand_drawing_challenge/input/processors/hand_tracking.py
+"""
+hand_drawing_challenge/input/processors/hand_tracking.py
 
-from typing import Optional, Tuple, Dict, Any
+Implements HandTrackingProcessor, an InputProcessor that:
+- Opens camera with cv2.VideoCapture
+- Uses MediaPipe to detect hand landmarks
+- Publishes hand detection events
+"""
+
 import cv2
 import mediapipe as mp
 import numpy as np
+import logging
 from dataclasses import dataclass
-from ...events.types import GameEventType
-from ...events.bus import EventBus
-from ..interfaces import InputProcessor
-from ..drawing_tracker import DrawingTracker
-from ..input_types import HandPoint
+from typing import Optional, Tuple, Any
+
+# Adjust the imports below if your structure differs:
+from hand_drawing_challenge.events.bus import EventBus
+from hand_drawing_challenge.events.types import GameEventType
+from hand_drawing_challenge.input.interfaces import InputProcessor
+from hand_drawing_challenge.input.input_types import HandPoint
+
 
 @dataclass
 class HandProcessorConfig:
@@ -1288,11 +1933,11 @@ class HandProcessorConfig:
 class HandTrackingProcessor(InputProcessor):
     """
     Processes hand tracking input using MediaPipe and publishes relevant events.
-    Uses DrawingTracker for trail management and smoothing.
     """
     
     def __init__(self, event_bus: EventBus, config: HandProcessorConfig):
-        """Initialize the hand tracking processor."""
+        print(">>> hand_tracking_processor.py: HandTrackingProcessor.__init__ CALLED")
+        self.logger = logging.getLogger(__name__)
         self.event_bus = event_bus
         self.config = config
         self._active = False
@@ -1302,7 +1947,15 @@ class HandTrackingProcessor(InputProcessor):
         self.is_drawing = False
         self.last_position: Optional[Tuple[int, int]] = None
         
-        # Initialize MediaPipe
+        # Subscribe to drawing events
+        self.event_bus.subscribe(GameEventType.DRAWING_STARTED, self._handle_drawing_event)
+        self.event_bus.subscribe(GameEventType.DRAWING_ENDED, self._handle_drawing_event)
+        
+        # Camera reference
+        self.camera = None
+
+        # Setup MediaPipe Hands
+        self.logger.debug("Creating mp.solutions.hands.Hands() with detection/tracking confidence")
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
@@ -1310,155 +1963,233 @@ class HandTrackingProcessor(InputProcessor):
             min_detection_confidence=config.min_detection_confidence,
             min_tracking_confidence=config.min_tracking_confidence
         )
-        
-        # Initialize camera
-        self.camera = cv2.VideoCapture(config.camera_id)
-        if self.camera.isOpened():
-            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, config.camera_width)
-            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, config.camera_height)
-        
-        # Initialize drawing tracker
-        self.drawing_tracker = DrawingTracker(
-            width=config.camera_width,
-            height=config.camera_height
-        )
-        
-        # Drawing canvas
-        self.canvas = np.zeros((config.camera_height, config.camera_width, 3), 
-                             dtype=np.uint8)
-    
+
+    def _initialize_camera(self) -> None:
+        """Open and configure the camera device."""
+        self.logger.debug("HandTrackingProcessor: _initialize_camera() called")
+        try:
+            # Try to list available cameras
+            available_cameras = []
+            for i in range(4):  # Check first 4 camera indices
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    available_cameras.append(i)
+                    cap.release()
+            self.logger.info(f"Available camera indices: {available_cameras}")
+            
+            # Initialize the camera
+            self.logger.info(f"Attempting to open camera {self.config.camera_id}")
+            self.camera = cv2.VideoCapture(self.config.camera_id)
+            if not self.camera.isOpened():
+                self.logger.error(f"Failed to open camera {self.config.camera_id}!")
+                return
+            
+            # Set and verify camera properties
+            self.logger.info("Setting camera properties...")
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.camera_width)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.camera_height)
+            
+            # Read actual properties
+            w = self.camera.get(cv2.CAP_PROP_FRAME_WIDTH)
+            h = self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            fps = self.camera.get(cv2.CAP_PROP_FPS)
+            backend = self.camera.getBackendName()
+            
+            self.logger.info(f"Camera initialized with:")
+            self.logger.info(f"- Resolution: {w}x{h}")
+            self.logger.info(f"- FPS: {fps}")
+            self.logger.info(f"- Backend: {backend}")
+            
+            # Test frame capture
+            success, test_frame = self.camera.read()
+            if success and test_frame is not None:
+                self.logger.info(f"Test frame captured successfully: shape={test_frame.shape}, dtype={test_frame.dtype}")
+            else:
+                self.logger.error("Failed to capture test frame!")
+        except Exception as e:
+            self.logger.error(f"Exception opening camera: {e}")
+            if self.camera is not None:
+                self.camera.release()
+                self.camera = None
+
     def is_active(self) -> bool:
-        """Return whether the processor is active and ready."""
+        """Return whether the processor is active and camera is open."""
         return bool(self._active and self.camera and self.camera.isOpened())
 
     def start(self) -> None:
-        """Start the processor and initialize resources."""
-        if not self.is_active():
-            if not self.camera.isOpened():
-                self.camera = cv2.VideoCapture(self.config.camera_id)
-                if not self.camera.isOpened():
-                    raise RuntimeError("Failed to open camera")
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.camera_width)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.camera_height)
+        """Start the processor and initialize camera resources."""
+        print(">>> hand_tracking_processor.py: start() called")
+        self.logger.info("HandTrackingProcessor.start() invoked")
+
+        # Attempt camera init if not done yet
+        if self.camera is None or not self.camera.isOpened():
+            self._initialize_camera()
+        
+        # If camera is good, mark active
+        if self.camera and self.camera.isOpened():
             self._active = True
+            self.logger.info("Hand tracking processor started successfully")
+            print(">>> Camera opened successfully!")
+        else:
+            self.logger.error("Camera not available; cannot start.")
+            print(">>> Camera NOT opened; check logs...")
 
     def stop(self) -> None:
-        """Stop the processor and release resources."""
+        """Stop the processor and release camera resources."""
+        self.logger.info("Stopping HandTrackingProcessor")
         self._active = False
-        if self.camera.isOpened():
+        if self.camera is not None:
             self.camera.release()
         self.cleanup()
 
     def cleanup(self) -> None:
-        """Clean up resources."""
+        """Clean up hand resources."""
+        self.logger.info("Cleaning up HandTrackingProcessor resources.")
         self.hands.close()
-        if self.camera.isOpened():
+        if self.camera is not None:
             self.camera.release()
-        
+            self.camera = None
+    
     def process(self, *args: Any, **kwargs: Any) -> Optional[np.ndarray]:
-        """Process current frame and update hand tracking state."""
+        """Process the current frame and update hand tracking state.
+
+        Returns:
+            The camera frame (with debug overlays if draw_debug=True),
+            or None if the camera read fails or not active.
+        """
         if not self.is_active():
+            self.logger.warning("HandTrackingProcessor not active, skipping frame processing")
             return None
             
-        success, frame = self.camera.read()
-        if not success:
-            self._active = False
-            return None
+        try:
+            if self.camera is None:
+                self.logger.error("Camera is None, cannot read frame")
+                return None
+
+            success, frame = self.camera.read()
+            self.logger.info(f"Camera read: success={success}, frame={'available' if frame is not None else 'None'}")
             
-        # Mirror if configured
-        if self.config.mirror_camera:
-            frame = cv2.flip(frame, 1)
+            if not success or frame is None:
+                self.logger.error("Failed to read camera frame")
+                return None
+                
+            self.logger.info(f"Frame shape: {frame.shape}, dtype: {frame.dtype}, mean pixel value: {frame.mean():.2f}")
             
-        # Convert and process frame
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.hands.process(rgb_frame)
-        
-        # Handle hand detection state change
-        if results.multi_hand_landmarks:
-            if not self.hand_detected:
-                self.hand_detected = True
-                self.event_bus.publish(GameEventType.HAND_DETECTED)
+            # Mirror if needed
+            if self.config.mirror_camera:
+                frame = cv2.flip(frame, 1)
             
-            # Process hand landmarks
-            hand_landmarks = results.multi_hand_landmarks[0]
+            # Convert to RGB for MediaPipe
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.hands.process(rgb_frame)
             
-            # Convert to HandPoint
-            h, w, _ = frame.shape
-            index_tip = hand_landmarks.landmark[8]
-            hand_point = HandPoint(
-                x=index_tip.x,
-                y=index_tip.y,
-                z=index_tip.z
-            )
-            
-            # Update drawing tracker
-            smoothed_pos = self.drawing_tracker.update(hand_point, self.is_drawing)
-            
-            if smoothed_pos:
-                # Update position and publish event
-                self.last_position = smoothed_pos
-                self.event_bus.publish(
-                    GameEventType.HAND_POSITION_UPDATED,
-                    {"position": smoothed_pos}
+            # If we detect a hand
+            if results.multi_hand_landmarks:
+                if not self.hand_detected:
+                    self.hand_detected = True
+                    self.event_bus.publish(GameEventType.HAND_DETECTED)
+                
+                # For simplicity, just track index fingertip (landmark 8)
+                index_tip = results.multi_hand_landmarks[0].landmark[8]
+                
+                print(f">>> HandTrackingProcessor: Got index tip at ({index_tip.x:.3f}, {index_tip.y:.3f})")
+                
+                # Store normalized coordinates (0-1)
+                self.last_position = (index_tip.x, index_tip.y)
+
+                # Create HandPoint with normalized coordinates
+                hand_point = HandPoint(
+                    x=index_tip.x,
+                    y=index_tip.y,
+                    z=index_tip.z
                 )
-                
-                # Update drawing if active
-                if self.is_drawing:
-                    self._update_drawing()
-                
-                # Draw debug visualization
-                if self.config.draw_debug:
-                    color = (0, 255, 0) if self.is_drawing else (0, 0, 255)
-                    cv2.circle(frame, smoothed_pos, 5, color, -1)
-                    
-        elif self.hand_detected:
-            self.hand_detected = False
-            self.last_position = None
-            self.event_bus.publish(GameEventType.HAND_LOST)
-        
-        # Combine frame and drawing canvas
-        return cv2.addWeighted(frame, 1.0, self.canvas, 0.7, 0)
-        
-    def _update_drawing(self) -> None:
-        """Update the drawing canvas using trail points from tracker."""
-        trail_points = self.drawing_tracker.get_trail_points()
-        if len(trail_points) > 1:
-            cv2.line(
-                self.canvas,
-                trail_points[-2],
-                trail_points[-1],
-                (0, 255, 0),
-                4
-            )
-        
+
+                print(f">>> HandTrackingProcessor: Created HandPoint: {hand_point}")
+                print(f">>> HandTrackingProcessor: Current drawing state: {self.is_drawing}")
+
+                # Publish position update
+                self.event_bus.publish(GameEventType.HAND_POSITION_UPDATED, {"position": hand_point})
+            else:
+                # No hand detected
+                if self.hand_detected:
+                    self.hand_detected = False
+                    self.last_position = None
+                    self.event_bus.publish(GameEventType.HAND_LOST)
+            
+            # Optionally draw debug lines on the BGR frame
+            if self.config.draw_debug:
+                frame = self._draw_debug(frame, results)
+            
+            return frame
+
+        except Exception as e:
+            self.logger.error(f"Error processing frame: {e}")
+            return None
+    
+    def _draw_debug(self, frame: np.ndarray, results: Any) -> np.ndarray:
+        """Draw debug info (only index finger tip) on the BGR frame."""
+        debug_frame = frame.copy()
+        if results and results.multi_hand_landmarks:
+            # Only draw index finger tip (landmark 8)
+            if self.last_position:
+                # Convert normalized coordinates to pixel coordinates for drawing
+                h, w = frame.shape[:2]
+                x = int(self.last_position[0] * w)
+                y = int(self.last_position[1] * h)
+                color = (0, 255, 0) if self.is_drawing else (0, 0, 255)
+                cv2.circle(debug_frame, (x, y), 5, color, -1)
+        return debug_frame
+            
+    def _handle_drawing_event(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
+        """Handle drawing state change events."""
+        self.is_drawing = (event_type == GameEventType.DRAWING_STARTED)
+        self.logger.info(f"Drawing state changed to: {self.is_drawing}")
+
     def set_drawing_state(self, is_drawing: bool) -> None:
-        """Set the drawing state and publish appropriate event."""
+        """Enable or disable drawing mode."""
         if self.is_drawing != is_drawing:
             self.is_drawing = is_drawing
-            event_type = (
-                GameEventType.DRAWING_STARTED if is_drawing 
-                else GameEventType.DRAWING_ENDED
-            )
+            event_type = (GameEventType.DRAWING_STARTED if is_drawing 
+                          else GameEventType.DRAWING_ENDED)
             self.event_bus.publish(event_type)
-            
-    def clear_canvas(self) -> None:
-        """Clear the drawing canvas and tracker state."""
-        self.canvas.fill(0)
-        self.drawing_tracker.clear()
 
 ```
 
 # hand_drawing_challenge\main.py
 
 ```py
-# file: main.py
+# main.py
 
+import pygame
+import sys
 from hand_drawing_challenge.application.game_application import GameApplication
+from hand_drawing_challenge.application.config import GameConfig
 
 def main():
     """Application entry point."""
-    app = GameApplication()
-    app.start()
+    try:
+        # Initialize pygame
+        pygame.init()
+        
+        # Create configuration
+        config = GameConfig(
+            screen_size=(1280, 720),
+            fps=60,
+            debug_mode=True,
+            camera_device=0,
+            camera_width=640,
+            camera_height=480
+        )
+        
+        # Create and start application
+        app = GameApplication(config)
+        app.start()
+        
+    except Exception as e:
+        print(f"Error running application: {e}")
+        sys.exit(1)
+    finally:
+        pygame.quit()
 
 if __name__ == "__main__":
     main()
@@ -1572,6 +2303,277 @@ class DrawingService:
             canvas=self.canvas.copy(),
             trail_points=self.drawing_tracker.get_trail_points()
         )
+```
+
+# hand_drawing_challenge\services\pattern_manager.py
+
+```py
+# hand_drawing_challenge/services/pattern_manager.py
+
+from typing import List, Optional, Tuple
+from .patterns.models import Pattern, Point
+from .patterns.generator import PatternGenerator
+from .patterns.renderer import PatternRenderer
+from ..events.bus import EventBus
+from ..events.types import GameEventType
+from ..events.events import PatternGeneratedEvent, PatternCompletedEvent
+
+class PatternManager:
+    """Service class that manages pattern generation, validation, and scoring."""
+    
+    def __init__(self, event_bus: EventBus):
+        """Initialize the pattern manager.
+        
+        Args:
+            event_bus: Event bus for communication
+        """
+        self._event_bus = event_bus
+        self._generator = PatternGenerator()
+        self._renderer = PatternRenderer()
+        self._current_pattern: Optional[Pattern] = None
+        self._current_difficulty = 1
+    
+    def initialize(self) -> None:
+        """Initialize the pattern manager."""
+        self._generator._initialize_basic_patterns()
+    
+    def get_next_pattern(self) -> Pattern:
+        """Get the next pattern based on current difficulty."""
+        patterns = self._generator.get_patterns_by_difficulty(self._current_difficulty)
+        self._current_pattern = patterns[0] if patterns else self._generator.get_pattern("square")
+        
+        # Create and publish event
+        event = PatternGeneratedEvent(pattern=self._current_pattern)
+        self._event_bus.publish(GameEventType.PATTERN_GENERATED, event)
+        
+        return self._current_pattern
+    
+    def get_guide_points(self) -> List[Tuple[float, float]]:
+        """Get guide points for the current pattern."""
+        if self._current_pattern:
+            return self._renderer.get_guide_points(self._current_pattern)
+        return []
+    
+    def get_expected_path(self) -> List[Tuple[float, float]]:
+        """Get expected path points for the current pattern."""
+        if self._current_pattern:
+            return self._renderer.get_expected_path(self._current_pattern)
+        return []
+    
+    def validate_drawing(self, drawing_points: List[Tuple[float, float]]) -> float:
+        """Validate a drawing against the current pattern.
+        
+        Args:
+            drawing_points: List of points from user's drawing
+            
+        Returns:
+            float: Score between 0 and 1
+        """
+        if not self._current_pattern or not drawing_points:
+            return 0.0
+            
+        # TODO: Implement drawing validation logic
+        # This would compare the drawing_points against the pattern's expected_path
+        # and return a score based on how well they match
+        
+        score = 0.5  # Placeholder score
+        
+        # Create and publish event
+        event = PatternCompletedEvent(
+            pattern=self._current_pattern,
+            score=score
+        )
+        self._event_bus.publish(GameEventType.PATTERN_COMPLETED, event)
+        
+        return score
+    
+    def increase_difficulty(self) -> None:
+        """Increase the pattern difficulty."""
+        self._current_difficulty = min(self._current_difficulty + 1, 3)
+    
+    def reset_difficulty(self) -> None:
+        """Reset pattern difficulty to default."""
+        self._current_difficulty = 1
+```
+
+# hand_drawing_challenge\services\patterns\__init__.py
+
+```py
+from .models import Point, Pattern
+from .generator import PatternGenerator
+from .renderer import PatternRenderer
+
+__all__ = ['Point', 'Pattern', 'PatternGenerator', 'PatternRenderer']
+```
+
+# hand_drawing_challenge\services\patterns\generator.py
+
+```py
+from typing import Dict, List
+import math
+from .models import Point, Pattern
+
+class PatternGenerator:
+    def __init__(self):
+        self.patterns: Dict[str, Pattern] = {}
+        self._initialize_basic_patterns()
+    
+    def _initialize_basic_patterns(self):
+        # Add square pattern
+        self._add_square_pattern()
+        # Add circle pattern
+        self._add_circle_pattern()
+        # Add triangle pattern
+        self._add_triangle_pattern()
+        # Add line pattern
+        self._add_line_pattern()
+    
+    def _add_square_pattern(self):
+        size = 100
+        guide_points = [
+            Point(0, 0),
+            Point(size, 0),
+            Point(size, size),
+            Point(0, size)
+        ]
+        
+        # Create more detailed path points for smooth drawing
+        expected_path = []
+        steps = 20  # Number of points per side
+        for i in range(4):
+            start = guide_points[i]
+            end = guide_points[(i + 1) % 4]
+            for step in range(steps):
+                t = step / steps
+                x = start.x + (end.x - start.x) * t
+                y = start.y + (end.y - start.y) * t
+                expected_path.append(Point(x, y))
+        
+        self.patterns["square"] = Pattern(
+            name="square",
+            difficulty=1,
+            guide_points=guide_points,
+            expected_path=expected_path
+        )
+    
+    def _add_circle_pattern(self):
+        radius = 50
+        center = Point(50, 50)
+        guide_points = []
+        expected_path = []
+        
+        # Create circle points
+        steps = 36  # Number of points around the circle
+        for i in range(steps):
+            angle = 2 * math.pi * i / steps
+            x = center.x + radius * math.cos(angle)
+            y = center.y + radius * math.sin(angle)
+            point = Point(x, y)
+            expected_path.append(point)
+            if i % 9 == 0:  # Add guide points every 90 degrees
+                guide_points.append(point)
+        
+        self.patterns["circle"] = Pattern(
+            name="circle",
+            difficulty=1,
+            guide_points=guide_points,
+            expected_path=expected_path
+        )
+    
+    def _add_triangle_pattern(self):
+        size = 100
+        height = size * math.sqrt(3) / 2
+        
+        guide_points = [
+            Point(size/2, 0),
+            Point(size, height),
+            Point(0, height)
+        ]
+        
+        expected_path = []
+        steps = 20
+        for i in range(3):
+            start = guide_points[i]
+            end = guide_points[(i + 1) % 3]
+            for step in range(steps):
+                t = step / steps
+                x = start.x + (end.x - start.x) * t
+                y = start.y + (end.y - start.y) * t
+                expected_path.append(Point(x, y))
+        
+        self.patterns["triangle"] = Pattern(
+            name="triangle",
+            difficulty=1,
+            guide_points=guide_points,
+            expected_path=expected_path
+        )
+    
+    def _add_line_pattern(self):
+        length = 100
+        guide_points = [
+            Point(0, 0),
+            Point(length, 0)
+        ]
+        
+        expected_path = []
+        steps = 20
+        for step in range(steps):
+            t = step / steps
+            x = t * length
+            expected_path.append(Point(x, 0))
+        
+        self.patterns["line"] = Pattern(
+            name="line",
+            difficulty=1,
+            guide_points=guide_points,
+            expected_path=expected_path
+        )
+    
+    def get_pattern(self, name: str) -> Pattern:
+        return self.patterns.get(name)
+    
+    def get_patterns_by_difficulty(self, difficulty: int) -> List[Pattern]:
+        return [p for p in self.patterns.values() if p.difficulty == difficulty]
+
+```
+
+# hand_drawing_challenge\services\patterns\models.py
+
+```py
+from dataclasses import dataclass
+from typing import List, Tuple
+
+@dataclass
+class Point:
+    x: float
+    y: float
+
+@dataclass
+class Pattern:
+    name: str
+    difficulty: int
+    guide_points: List[Point]
+    expected_path: List[Point]
+    tolerance: float = 0.2
+    size: Tuple[float, float] = (100, 100)
+```
+
+# hand_drawing_challenge\services\patterns\renderer.py
+
+```py
+from typing import List, Tuple
+from .models import Pattern
+
+class PatternRenderer:
+    @staticmethod
+    def get_guide_points(pattern: Pattern) -> List[Tuple[float, float]]:
+        """Returns guide points for display"""
+        return [(p.x, p.y) for p in pattern.guide_points]
+    
+    @staticmethod
+    def get_expected_path(pattern: Pattern) -> List[Tuple[float, float]]:
+        """Returns expected path points for display or comparison"""
+        return [(p.x, p.y) for p in pattern.expected_path]
 ```
 
 # hand_drawing_challenge\tests\test_engine\test_game_engine.py
@@ -1695,6 +2697,186 @@ def test_event_subscription(game_engine, event_bus):
     """Test that engine properly subscribes to events."""
     # Check that the subscription was made during initialization
     assert GameEventType.GAME_ENDED in event_bus._subscribers
+
+```
+
+# hand_drawing_challenge\tests\test_engine\test_game_startup.py
+
+```py
+# tests/test_engine/test_game_startup.py
+
+import pytest
+from unittest.mock import Mock, patch
+import pygame
+from hand_drawing_challenge.application.game_application import GameApplication
+from hand_drawing_challenge.engine.modes.menu_mode import MenuMode
+
+@pytest.fixture
+def mock_pygame():
+    """Mock pygame initialization."""
+    pygame.init()  # Initialize pygame
+    pygame.font.init()  # Initialize font system
+    
+    # Create a real surface for testing
+    test_surface = pygame.Surface((1280, 720))
+    
+    with patch('pygame.display.set_mode', return_value=test_surface) as mock_set_mode, \
+         patch('pygame.display.get_surface', return_value=test_surface), \
+         patch('pygame.time.Clock'), \
+         patch('pygame.event.get', return_value=[]), \
+         patch('hand_drawing_challenge.ui.manager.UIManager.render'), \
+         patch('hand_drawing_challenge.ui.manager.UIManager.update_frame'), \
+         patch('hand_drawing_challenge.input.manager.InputManager.start'), \
+         patch('hand_drawing_challenge.input.manager.InputManager.process_input'), \
+         patch('hand_drawing_challenge.input.manager.InputManager.get_frame', return_value=None):
+        
+        yield mock_set_mode
+    
+    pygame.font.quit()
+    pygame.quit()
+
+@pytest.fixture
+def game_app(mock_pygame):
+    """Create a game application instance for testing."""
+    return GameApplication()
+
+def test_application_starts_with_menu(game_app, mock_pygame):
+    """Test that the game application starts with menu mode."""
+    # Start the application in test mode
+    game_app.start(test_mode=True)
+    
+    # Verify engine is initialized with menu mode
+    assert game_app.engine.current_mode is not None
+    assert isinstance(game_app.engine.current_mode, MenuMode)
+    assert game_app.engine.current_mode.is_active
+
+def test_full_startup_sequence(game_app, mock_pygame):
+    """Test the complete startup sequence."""
+    game_app.start(test_mode=True)
+    
+    # Verify all systems are initialized
+    assert game_app.is_running
+    assert game_app.engine.is_running
+    assert isinstance(game_app.engine.current_mode, MenuMode)
+    assert game_app.engine.current_mode.is_active
+    assert game_app.event_bus is not None
+
+def test_menu_mode_cleanup_on_stop(game_app, mock_pygame):
+    """Test that menu mode is properly cleaned up when game stops."""
+    game_app.start(test_mode=True)
+    menu_mode = game_app.engine.current_mode
+    
+    # Stop the game
+    game_app.stop()
+    
+    # Verify cleanup
+    assert not game_app.is_running
+    assert not menu_mode.is_active
+
+@patch('pygame.event.get')
+def test_menu_handles_events(mock_event_get, game_app, mock_pygame):
+    """Test that menu mode properly handles events."""
+    # Setup mock events
+    mock_event = Mock()
+    mock_event.type = pygame.MOUSEBUTTONDOWN
+    mock_event.pos = (640, 360)  # Center of screen
+    mock_event_get.return_value = [mock_event]
+    
+    game_app.start(test_mode=True)
+    menu_mode = game_app.engine.current_mode
+    
+    # Process one frame
+    game_app._process_frame()
+    
+    # Verify event was processed
+    assert menu_mode.is_active
+
+```
+
+# hand_drawing_challenge\tests\test_engine\test_menu_startup.py
+
+```py
+# tests/test_engine/test_menu_startup.py
+
+import pytest
+from unittest.mock import Mock, patch
+import pygame
+from hand_drawing_challenge.engine.game_engine import GameEngine
+from hand_drawing_challenge.events.bus import EventBus
+from hand_drawing_challenge.engine.modes.menu_mode import MenuMode
+
+@pytest.fixture(scope="session", autouse=True)
+def pygame_init():
+    """Initialize pygame for all tests."""
+    pygame.init()
+    yield
+    pygame.quit()
+
+@pytest.fixture
+def event_bus():
+    """Create a fresh event bus for each test."""
+    return EventBus()
+
+@pytest.fixture
+def game_engine(event_bus):
+    """Create a game engine instance for testing."""
+    return GameEngine(event_bus)
+
+@pytest.fixture
+def mock_display():
+    """Mock pygame display for testing."""
+    with patch('pygame.display.set_mode') as mock_set_mode, \
+         patch('pygame.display.get_surface') as mock_get_surface:
+        # Create a mock surface
+        mock_surface = Mock()
+        mock_surface.get_rect.return_value = pygame.Rect(0, 0, 1280, 720)
+        mock_set_mode.return_value = mock_surface
+        mock_get_surface.return_value = mock_surface
+        yield mock_set_mode
+
+def test_engine_starts_with_menu_mode(game_engine, mock_display):
+    """Test that the game engine starts in menu mode."""
+    # Initialize the game engine
+    game_engine.initialize()
+    
+    # Verify current mode is MenuMode
+    assert game_engine.current_mode is not None
+    assert isinstance(game_engine.current_mode, MenuMode)
+    assert game_engine.current_mode.is_active
+
+def test_menu_mode_initialization(game_engine, mock_display):
+    """Test that menu mode is properly initialized."""
+    game_engine.initialize()
+    menu_mode = game_engine.current_mode
+    
+    # Verify menu mode state
+    assert menu_mode.is_active
+    assert menu_mode.event_bus is not None
+    assert menu_mode.font_large is not None
+    assert menu_mode.font_normal is not None
+    assert menu_mode.buttons_initialized
+
+def test_menu_mode_registers_events(event_bus, mock_display):
+    """Test that menu mode properly registers for events."""
+    menu_mode = MenuMode(event_bus)
+    
+    # Initialize and start menu mode
+    menu_mode.initialize()
+    menu_mode.start()
+    
+    # Verify menu is active
+    assert menu_mode.is_active
+
+def test_menu_mode_buttons_positioned(event_bus, mock_display):
+    """Test that menu buttons are properly positioned."""
+    menu_mode = MenuMode(event_bus)
+    menu_mode.initialize()
+    
+    # Verify buttons are positioned within screen bounds
+    assert 0 <= menu_mode.single_player_rect.centerx <= 1280
+    assert 0 <= menu_mode.single_player_rect.centery <= 720
+    assert 0 <= menu_mode.competitive_rect.centerx <= 1280
+    assert 0 <= menu_mode.competitive_rect.centery <= 720
 
 ```
 
@@ -2597,53 +3779,48 @@ import pygame
 
 class UIComponent:
     """Base class for UI components."""
-    
+
     def __init__(self, rect: pygame.Rect):
         """Initialize the UI component.
-        
+
         Args:
             rect: Position and size of the component
         """
         self.rect = rect
         self.visible = True
-    
+
     def update(self, *args, **kwargs) -> None:
         """Update component state. To be implemented by subclasses."""
         pass
-    
+
     def draw(self, screen: pygame.Surface) -> None:
         """Draw component to screen. To be implemented by subclasses.
-        
+
         Args:
             screen: Pygame surface to draw on
         """
         pass
+
 
 ```
 
 # hand_drawing_challenge\ui\components\canvas.py
 
 ```py
-# ui/components/canvas.py
+# hand_drawing_challenge/ui/components/canvas.py
+
 import cv2
 import numpy as np
 import pygame
-from typing import Optional, Tuple
+import logging
+from typing import Optional, Tuple, Union
 from ..base import UIComponent
 from ..utils.colors import Colors
-from hand_drawing_challenge.input.drawing_tracker import DrawingTracker
-from hand_drawing_challenge.input.processors.hand_tracking import HandPoint
+from ...input.input_types import HandPoint
+from ...input.drawing_tracker import DrawingTracker, DrawingConfig
 
 class DrawingCanvas(UIComponent):
-    """
-    Drawing canvas component that displays camera feed and handles drawing visualization.
-    
-    This component:
-    - Shows live camera feed as background
-    - Overlays drawing trails
-    - Provides visual feedback for hand tracking
-    - Handles drawing state and trail management
-    """
+    """Drawing canvas component that displays camera feed and drawing visualization."""
     
     def __init__(self, rect: pygame.Rect):
         """Initialize the drawing canvas.
@@ -2652,95 +3829,160 @@ class DrawingCanvas(UIComponent):
             rect: Position and size of the canvas
         """
         super().__init__(rect)
-        # Drawing surface for trails
-        self.canvas = np.zeros((rect.height, rect.width, 3), dtype=np.uint8)
-        
-        # Initialize drawing tracker with canvas dimensions
-        self.drawing_tracker = DrawingTracker(
-            width=rect.width, 
-            height=rect.height
-        )
+        self.logger = logging.getLogger(__name__)
         
         # State
         self.is_drawing = False
-        self.current_frame = None
+        self.current_frame: Optional[np.ndarray] = None
         self.last_position: Optional[Tuple[int, int]] = None
+        
+        # Create blank frame for when no camera feed is available
+        self.blank_frame = np.zeros((rect.height, rect.width, 3), dtype=np.uint8)
+        
+        # Initialize drawing tracker
+        self.drawing_tracker = DrawingTracker(
+            width=rect.width,
+            height=rect.height,
+            config=DrawingConfig(
+                smoothing_window=3,  # Reduced for more responsive smoothing
+                max_jump_distance=100,
+                min_movement_threshold=2  # Reduced to be more sensitive to movement
+            )
+        )
     
-    def update(self, processed_frame: np.ndarray) -> None:
-        """Update canvas with new processed frame.
+    def update(self, frame: Optional[Union[np.ndarray, float]] = None) -> None:
+        """Update canvas state with new frame.
         
         Args:
-            processed_frame: Frame that has been processed by hand tracking,
-                           including drawing trails and hand position indicators
+            frame: New frame to display (raw camera frame)
         """
-        if processed_frame is None:
+        if frame is None:
+            self.logger.warning("Received None frame")
             return
             
-        # Store current frame - this already includes hand tracking visualization
-        # and drawing trails from the HandTrackingProcessor
-        self.current_frame = processed_frame.copy()
+        try:
+            if isinstance(frame, np.ndarray):
+                self.logger.info(f"Received frame: shape={frame.shape}, dtype={frame.dtype}")
+                
+                # Ensure frame has correct dimensions and type
+                if frame.shape[1] != self.rect.width or frame.shape[0] != self.rect.height:
+                    self.logger.info(f"Resizing frame from {frame.shape[:2]} to {(self.rect.height, self.rect.width)}")
+                    frame = cv2.resize(frame, (self.rect.width, self.rect.height))
+                
+                if frame.dtype != np.uint8:
+                    self.logger.info(f"Converting frame from {frame.dtype} to uint8")
+                    frame = frame.astype(np.uint8)
+                
+                # Check if frame contains any data
+                if frame.size == 0 or frame.mean() == 0:
+                    self.logger.warning("Frame appears to be empty or black")
+                else:
+                    self.logger.info(f"Frame mean pixel value: {frame.mean():.2f}")
+                    
+                # Store raw camera frame
+                self.current_frame = frame.copy()
+            else:
+                self.logger.warning(f"Invalid frame type received: {type(frame)}")
+        except Exception as e:
+            self.logger.error(f"Error updating frame: {e}")
     
     def draw(self, screen: pygame.Surface) -> None:
-        """Draw the canvas with camera feed and drawing overlay.
+        """Draw the canvas contents to screen."""
+        if not self.visible:
+            return
+            
+        try:
+            # Use blank frame if no camera feed
+            display_frame = self.current_frame if self.current_frame is not None else self.blank_frame
+            
+            if display_frame is None:
+                self.logger.error("No frame available for display")
+                pygame.draw.rect(screen, Colors.RED, self.rect, 2)
+                return
+                
+            # Convert frame to pygame surface
+            try:
+                display = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+                display_surface = pygame.surfarray.make_surface(display.swapaxes(0, 1))
+                
+                # Draw camera frame first
+                screen.blit(display_surface, self.rect)
+                
+                # Draw trail points on top of camera frame
+                self._draw_trail_points(screen)
+                
+                # Draw border
+                pygame.draw.rect(screen, Colors.BORDER, self.rect, 2)
+            except Exception as e:
+                self.logger.error(f"Error converting frame: {e}")
+                pygame.draw.rect(screen, Colors.RED, self.rect, 2)
+                return
+            
+        except Exception as e:
+            self.logger.error(f"Error drawing frame: {e}")
+            pygame.draw.rect(screen, Colors.RED, self.rect, 2)  # Error indicator
+    
+    def _draw_trail_points(self, screen: pygame.Surface) -> None:
+        """Draw the trail points on the screen."""
+        trail_points = self.drawing_tracker.get_trail_points()
+        self.logger.info(f"Drawing trail points: count={len(trail_points)}")
+        if len(trail_points) > 1:
+            # Offset points by canvas position
+            adjusted_points = [(x + self.rect.x, y + self.rect.y) 
+                             for x, y in trail_points]
+            pygame.draw.lines(
+                screen,
+                Colors.TRAIL_COLOR,
+                False,
+                adjusted_points,
+                4
+            )
+            self.logger.info(f"Drew lines with {len(adjusted_points)} points")
+    
+    def update_hand_position(self, hand_point: Optional[HandPoint]) -> None:
+        """Update hand position and drawing state.
         
         Args:
-            screen: Pygame surface to draw on
+            hand_point: Current hand position
         """
-        if not self.visible or self.current_frame is None:
-            # Draw placeholder if no camera feed
-            pygame.draw.rect(screen, Colors.BACKGROUND, self.rect)
-            pygame.draw.rect(screen, Colors.BORDER, self.rect, 2)
-            return
-        
-        # Combine camera frame and drawing canvas
-        display = cv2.addWeighted(
-            self.current_frame, 
-            1.0,  # Camera frame weight
-            self.canvas, 
-            0.7,  # Drawing trail weight
-            0
-        )
-        
-        # Convert to pygame surface
-        display = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
-        display_surface = pygame.surfarray.make_surface(display)
-        
-        # Rotate if needed (depending on camera orientation)
-        display_surface = pygame.transform.rotate(display_surface, 270)
-        
-        # Draw to screen
-        screen.blit(display_surface, self.rect)
-        pygame.draw.rect(screen, Colors.BORDER, self.rect, 2)
-    
-    def clear(self) -> None:
-        """Clear the drawing canvas and reset trail."""
-        self.canvas.fill(0)
-        self.drawing_tracker.clear()
-        self.last_position = None
+        if hand_point:
+            # Convert normalized coordinates to canvas coordinates
+            x = int(hand_point.x * self.rect.width)
+            y = int(hand_point.y * self.rect.height)
+            
+            # Only update trail points if drawing is active (spacebar pressed)
+            # Otherwise just track the current position
+            self.last_position = (x, y)
+            # Update tracker with current position and drawing state
+            self.logger.info(f"Updating tracker at ({x}, {y}), drawing={self.is_drawing}")
+            pos = (x, y)
+            smoothed_pos = self.drawing_tracker.update(pos, self.is_drawing)
+            if smoothed_pos:
+                self.logger.info(f"Got smoothed point: {smoothed_pos}")
     
     def set_drawing_state(self, is_drawing: bool) -> None:
-        """Set whether currently drawing or not.
+        """Set whether currently drawing.
         
         Args:
-            is_drawing: Whether to enable drawing mode
+            is_drawing: Whether drawing is enabled
         """
-        self.is_drawing = is_drawing
+        self.logger.info(f"Setting drawing state to: {is_drawing}")
+        if self.is_drawing != is_drawing:
+            self.is_drawing = is_drawing
     
     def get_drawing_state(self) -> bool:
         """Get current drawing state.
         
         Returns:
-            bool: Whether currently in drawing mode
+            bool: Whether drawing is enabled
         """
         return self.is_drawing
-    
-    def get_last_position(self) -> Optional[Tuple[int, int]]:
-        """Get the last known hand position.
         
-        Returns:
-            Tuple[int, int] or None: Last (x, y) position if available
-        """
-        return self.last_position
+    def clear(self) -> None:
+        """Reset the canvas display state."""
+        self.current_frame = None
+        self.last_position = None
+        self.drawing_tracker.clear()
 
 ```
 
@@ -2754,27 +3996,27 @@ from ..utils.colors import Colors
 
 class PatternDisplay(UIComponent):
     """Component for displaying the pattern to be drawn."""
-    
+
     def __init__(self, rect: pygame.Rect):
         super().__init__(rect)
         self.current_pattern = None
         self.font = pygame.font.Font(None, 36)
-        
+
     def set_pattern(self, pattern) -> None:
         """Set the current pattern to display."""
         self.current_pattern = pattern
-        
+
     def draw(self, screen: pygame.Surface) -> None:
         """Draw the pattern display component."""
         # Draw background
         pygame.draw.rect(screen, Colors.COMPONENT_BG, self.rect)
         pygame.draw.rect(screen, Colors.BORDER, self.rect, 2)
-        
+
         # Draw title
         title = self.font.render("Pattern", True, Colors.TEXT)
         title_rect = title.get_rect(centerx=self.rect.centerx, top=self.rect.top + 10)
         screen.blit(title, title_rect)
-        
+
         if self.current_pattern:
             # Draw the actual pattern (placeholder)
             pattern_rect = pygame.Rect(
@@ -2790,6 +4032,7 @@ class PatternDisplay(UIComponent):
             text_rect = text.get_rect(center=self.rect.center)
             screen.blit(text, text_rect)
 
+
 ```
 
 # hand_drawing_challenge\ui\components\score_display.py
@@ -2802,41 +4045,42 @@ from ..utils.colors import Colors
 
 class ScoreDisplay(UIComponent):
     """Component for displaying the current score and game state."""
-    
+
     def __init__(self, rect: pygame.Rect):
         super().__init__(rect)
         self.score = 0
         self.game_state = "Ready"
         self.is_drawing = False
         self.font = pygame.font.Font(None, 36)
-        
+
     def update(self, score: int, game_state: str, is_drawing: bool) -> None:
         """Update the display state."""
         self.score = score
         self.game_state = game_state
         self.is_drawing = is_drawing
-        
+
     def draw(self, screen: pygame.Surface) -> None:
         """Draw the score display component."""
         # Draw background
         pygame.draw.rect(screen, Colors.COMPONENT_BG, self.rect)
         pygame.draw.rect(screen, Colors.BORDER, self.rect, 2)
-        
+
         # Draw title
         title = self.font.render("Score", True, Colors.TEXT)
         title_rect = title.get_rect(centerx=self.rect.centerx, top=self.rect.top + 10)
         screen.blit(title, title_rect)
-        
+
         # Draw score
         score_text = self.font.render(str(self.score), True, Colors.TEXT)
         score_rect = score_text.get_rect(centerx=self.rect.centerx, top=title_rect.bottom + 20)
         screen.blit(score_text, score_rect)
-        
+
         # Draw game state
         state_color = Colors.SUCCESS if self.is_drawing else Colors.TEXT
         state_text = self.font.render(self.game_state, True, state_color)
         state_rect = state_text.get_rect(centerx=self.rect.centerx, top=score_rect.bottom + 40)
         screen.blit(state_text, state_rect)
+
 
 ```
 
@@ -3020,14 +4264,17 @@ class GameUI:
 # hand_drawing_challenge\ui\manager.py
 
 ```py
-# file: ui/manager.py
+# hand_drawing_challenge/ui/manager.py
 
 from typing import Dict, Optional
 import pygame
+import numpy as np
+import logging
 from ..events.bus import EventBus
 from ..events.types import GameEventType
 from .base import UIComponent
 from .renderer import Renderer
+from ..input.manager import InputManager
 from .components.canvas import DrawingCanvas
 from .components.pattern_display import PatternDisplay
 from .components.score_display import ScoreDisplay
@@ -3035,103 +4282,154 @@ from .components.score_display import ScoreDisplay
 class UIManager:
     """
     Manages all UI components and coordinates with the renderer.
-    
-    Follows the UML architecture by:
-    - Owning a Renderer instance
-    - Managing a dictionary of UIComponents
-    - Handling UI-specific events through EventBus
-    - Coordinating component updates and rendering
     """
-    
+
     def __init__(self, event_bus: EventBus, screen_size: tuple[int, int] = (1280, 720)):
-        """
-        Initialize the UI manager.
-        
-        Args:
-            event_bus: Central event bus for UI events
-            screen_size: Tuple of (width, height) for the window
-        """
+        """Initialize the UI manager."""
+        print(">>> ui/manager.py: UIManager.__init__() called")
         self.event_bus = event_bus
         self.screen_size = screen_size
         self.components: Dict[str, UIComponent] = {}
+        self.logger = logging.getLogger(__name__)
         
         # Initialize renderer
         self.renderer = Renderer(screen_size)
         
+        # Initialize input manager with same event bus
+        print(">>> ui/manager.py: Creating InputManager...")
+        self.input_manager = InputManager(self.event_bus, camera_id=0)
+        
+        # Last valid frame
+        self.current_frame: Optional[np.ndarray] = None
+
         # Subscribe to relevant events
         self.event_bus.subscribe(GameEventType.GAME_ENDED, self._handle_game_end)
-        
+        self.event_bus.subscribe(GameEventType.MENU_BACK, self._handle_menu_back)
+        self.event_bus.subscribe(GameEventType.HAND_POSITION_UPDATED, self._handle_hand_position)
+
         # Initialize UI components
         self._init_components()
-        
+
     def _init_components(self) -> None:
         """Initialize and position all UI components."""
         # Main drawing area (center)
         self.components['canvas'] = DrawingCanvas(
             pygame.Rect(320, 120, 640, 480)
         )
-        
+
         # Pattern display (left)
         self.components['pattern'] = PatternDisplay(
             pygame.Rect(20, 120, 280, 280)
         )
-        
+
         # Score display (right)
         self.components['score'] = ScoreDisplay(
             pygame.Rect(980, 120, 280, 480)
         )
-    
-    def update(self, delta_time: float) -> None:
-        """
-        Update all UI components.
-        
-        Args:
-            delta_time: Time elapsed since last update
-        """
-        for component in self.components.values():
-            if component.visible:
-                component.update(delta_time)
-    
+
+    def update(self, delta_time: float, score: int = 0, game_state: str = "Ready", is_drawing: bool = False) -> None:
+        """Update all UI components."""
+        try:
+            # Process input
+            self.input_manager.process_input()
+            
+            # Get latest frame
+            frame = self.input_manager.get_frame()
+            if isinstance(frame, np.ndarray):
+                self.current_frame = frame
+                # Update drawing canvas with new frame
+                canvas = self.get_component('canvas')
+                if canvas and isinstance(canvas, DrawingCanvas):
+                    canvas.update(frame)
+
+            # Update other components
+            for component in self.components.values():
+                if not component.visible:
+                    continue
+
+                # Update specific component types
+                if isinstance(component, ScoreDisplay):
+                    component.update(score, game_state, is_drawing)
+                elif not isinstance(component, DrawingCanvas):  # Skip DrawingCanvas as it's handled above
+                    component.update(delta_time)
+
+        except Exception as e:
+            self.logger.error(f"Error updating UI components: {e}")
+
     def render(self) -> None:
         """Render all UI components using the renderer."""
         # Clear screen
         self.renderer.clear()
-        
+
         # Render each visible component
         for component in self.components.values():
             if component.visible:
                 component.draw(self.renderer.get_screen())
-        
+
         # Update display
         self.renderer.present()
-    
+
     def get_component(self, name: str) -> Optional[UIComponent]:
-        """
-        Get a UI component by name.
-        
-        Args:
-            name: Name of the component to retrieve
-            
-        Returns:
-            UIComponent if found, None otherwise
-        """
+        """Get a UI component by name."""
         return self.components.get(name)
-    
+
     def set_component_visibility(self, name: str, visible: bool) -> None:
-        """
-        Set visibility of a UI component.
-        
-        Args:
-            name: Name of the component
-            visible: Whether component should be visible
-        """
+        """Set visibility of a UI component."""
         if name in self.components:
             self.components[name].visible = visible
-    
+
+    def update_frame(self, frame: Optional[np.ndarray]) -> None:
+        """Update components with new frame data."""
+        if frame is not None and isinstance(frame, np.ndarray):
+            self.current_frame = frame
+            canvas = self.get_component('canvas')
+            if canvas and isinstance(canvas, DrawingCanvas):
+                canvas.update(frame)
+
+    def clear_canvas(self) -> None:
+        """Clear the drawing canvas."""
+        canvas = self.get_component('canvas')
+        if canvas and isinstance(canvas, DrawingCanvas):
+            canvas.clear()
+
     def _handle_game_end(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
         """Handle cleanup on game end."""
+        self.stop_input_processing()
         self.renderer.cleanup()
+        self.input_manager.cleanup()
 
+    def _handle_menu_back(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
+        """Handle returning to menu."""
+        self.stop_input_processing()
+
+    def _handle_hand_position(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
+        """Handle hand position updates."""
+        if data and "position" in data:
+            canvas = self.get_component('canvas')
+            if canvas and isinstance(canvas, DrawingCanvas):
+                canvas.update_hand_position(data["position"])
+
+    def cleanup(self) -> None:
+        """Clean up all resources."""
+        if hasattr(self, 'renderer'):
+            self.renderer.cleanup()
+        if hasattr(self, 'input_manager'):
+            self.input_manager.cleanup()
+        self.components.clear()
+
+    def start_input_processing(self) -> None:
+        """Start input processing."""
+        print(">>> ui/manager.py: start_input_processing() called")
+        if hasattr(self, 'input_manager'):
+            print(">>> ui/manager.py: Calling input_manager.start()")
+            self.input_manager.start()
+        else:
+            print(">>> ui/manager.py: WARNING - No input_manager found!")
+
+    def stop_input_processing(self) -> None:
+        """Stop input processing."""
+        if hasattr(self, 'input_manager'):
+            self.input_manager.stop()
 
 ```
 
@@ -6074,7 +7372,7 @@ from input_processing.hand_tracking import HandTracker
 from .components.canvas import DrawingCanvas
 from .components.pattern_display import PatternDisplay
 from .components.score_display import ScoreDisplay
-from .utils.colors import Colors
+from .utils.colors import Colors, ColorRGB
 
 class GameUI:
     """Main game UI orchestrator."""
@@ -6132,7 +7430,7 @@ class GameUI:
         self.start_button = pygame.Rect(480, button_y, 120, 40)
         self.clear_button = pygame.Rect(680, button_y, 120, 40)
     
-    def draw_button(self, rect: pygame.Rect, text: str, color: Colors.ColorRGB = None):
+    def draw_button(self, rect: pygame.Rect, text: str, color: ColorRGB = None):
         """Draw a button with text.
         
         Args:
@@ -6258,6 +7556,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 ```
 
 # HDG\ui\utils\__init__.py

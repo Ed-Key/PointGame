@@ -44,3 +44,4 @@ class CompetitiveMode(GameMode):
                 if event.key == pygame.K_ESCAPE:
                     # Return to menu
                     self.event_bus.publish(GameEventType.GAME_ENDED)
+                    self.stop()

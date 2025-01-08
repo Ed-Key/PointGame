@@ -1,15 +1,25 @@
-# hand_drawing_challenge/input/processors/hand_tracking.py
+"""
+hand_drawing_challenge/input/processors/hand_tracking.py
 
-from typing import Optional, Tuple, Dict, Any
+Implements HandTrackingProcessor, an InputProcessor that:
+- Opens camera with cv2.VideoCapture
+- Uses MediaPipe to detect hand landmarks
+- Publishes hand detection events
+"""
+
 import cv2
 import mediapipe as mp
 import numpy as np
+import logging
 from dataclasses import dataclass
-from ...events.types import GameEventType
-from ...events.bus import EventBus
-from ..interfaces import InputProcessor
-from ..drawing_tracker import DrawingTracker
-from ..input_types import HandPoint
+from typing import Optional, Tuple, Any
+
+# Adjust the imports below if your structure differs:
+from hand_drawing_challenge.events.bus import EventBus
+from hand_drawing_challenge.events.types import GameEventType
+from hand_drawing_challenge.input.interfaces import InputProcessor
+from hand_drawing_challenge.input.input_types import HandPoint
+
 
 @dataclass
 class HandProcessorConfig:
@@ -21,25 +31,35 @@ class HandProcessorConfig:
     camera_id: int = 0
     mirror_camera: bool = True
     draw_debug: bool = True
+    target_fps: int = 60
 
 class HandTrackingProcessor(InputProcessor):
     """
     Processes hand tracking input using MediaPipe and publishes relevant events.
-    Uses DrawingTracker for trail management and smoothing.
     """
     
     def __init__(self, event_bus: EventBus, config: HandProcessorConfig):
-        """Initialize the hand tracking processor."""
+        print(">>> hand_tracking_processor.py: HandTrackingProcessor.__init__ CALLED")
+        self.logger = logging.getLogger(__name__)
         self.event_bus = event_bus
         self.config = config
         self._active = False
+        self._processing_enabled = False
         
         # State tracking
         self.hand_detected = False
         self.is_drawing = False
         self.last_position: Optional[Tuple[int, int]] = None
         
-        # Initialize MediaPipe
+        # Subscribe to drawing events
+        self.event_bus.subscribe(GameEventType.DRAWING_STARTED, self._handle_drawing_event)
+        self.event_bus.subscribe(GameEventType.DRAWING_ENDED, self._handle_drawing_event)
+        
+        # Camera reference
+        self.camera = None
+
+        # Setup MediaPipe Hands
+        self.logger.debug("Creating mp.solutions.hands.Hands() with detection/tracking confidence")
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
@@ -47,138 +67,200 @@ class HandTrackingProcessor(InputProcessor):
             min_detection_confidence=config.min_detection_confidence,
             min_tracking_confidence=config.min_tracking_confidence
         )
-        
-        # Initialize camera
-        self.camera = cv2.VideoCapture(config.camera_id)
-        if self.camera.isOpened():
-            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, config.camera_width)
-            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, config.camera_height)
-        
-        # Initialize drawing tracker
-        self.drawing_tracker = DrawingTracker(
-            width=config.camera_width,
-            height=config.camera_height
-        )
-        
-        # Drawing canvas
-        self.canvas = np.zeros((config.camera_height, config.camera_width, 3), 
-                             dtype=np.uint8)
-    
+
+    def _initialize_camera(self) -> None:
+        """Initialize the camera but don't start it yet"""
+        try:
+            self.logger.info(f"Attempting to open camera {self.config.camera_id}")
+            self.camera = cv2.VideoCapture(self.config.camera_id)
+            if not self.camera.isOpened():
+                self.logger.error(f"Failed to open camera {self.config.camera_id}!")
+                return
+            
+            # Set and verify camera properties
+            self.logger.info("Setting camera properties...")
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.camera_width)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.camera_height)
+            self.camera.set(cv2.CAP_PROP_FPS, self.config.target_fps)
+
+            # Read actual properties
+            w = self.camera.get(cv2.CAP_PROP_FRAME_WIDTH)
+            h = self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            fps = self.camera.get(cv2.CAP_PROP_FPS)
+            backend = self.camera.getBackendName()
+            
+            self.logger.info(f"Camera initialized with:")
+            self.logger.info(f"- Resolution: {w}x{h}")
+            self.logger.info(f"- FPS: {fps}")
+            self.logger.info(f"- Backend: {backend}")
+            
+            # Test frame capture
+            success, test_frame = self.camera.read()
+            if success and test_frame is not None:
+                self.logger.info(f"Test frame captured successfully: shape={test_frame.shape}, dtype={test_frame.dtype}")
+                self._active = True
+            else:
+                self.logger.error("Failed to capture test frame!")
+                self.camera.release()
+                self.camera = None
+
+        except Exception as e:
+            self.logger.error(f"Exception opening camera: {e}")
+            if self.camera:
+                self.camera.release()
+                self.camera = None
+
     def is_active(self) -> bool:
-        """Return whether the processor is active and ready."""
+        """Return whether the processor is active and camera is open."""
         return bool(self._active and self.camera and self.camera.isOpened())
 
     def start(self) -> None:
-        """Start the processor and initialize resources."""
-        if not self.is_active():
-            if not self.camera.isOpened():
-                self.camera = cv2.VideoCapture(self.config.camera_id)
-                if not self.camera.isOpened():
-                    raise RuntimeError("Failed to open camera")
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.camera_width)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.camera_height)
+        """Start the processor and initialize camera resources."""
+        print(">>> hand_tracking_processor.py: start() called")
+        self.logger.info("HandTrackingProcessor.start() invoked")
+
+        # Attempt camera init if not done yet
+        if self.camera is None or not self.camera.isOpened():
+            self._initialize_camera()
+        
+        # If camera is good, mark active
+        if self.camera and self.camera.isOpened():
             self._active = True
+            self.logger.info("Hand tracking processor started successfully")
+            print(">>> Camera opened successfully!")
+        else:
+            self.logger.error("Camera not available; cannot start.")
+            print(">>> Camera NOT opened; check logs...")
 
     def stop(self) -> None:
-        """Stop the processor and release resources."""
+        """Stop the processor and release camera resources."""
+        self.logger.info("Stopping HandTrackingProcessor")
         self._active = False
-        if self.camera.isOpened():
+        if self.camera is not None:
             self.camera.release()
         self.cleanup()
 
     def cleanup(self) -> None:
-        """Clean up resources."""
-        self.hands.close()
-        if self.camera.isOpened():
-            self.camera.release()
-        
-    def process(self, *args: Any, **kwargs: Any) -> Optional[np.ndarray]:
-        """Process current frame and update hand tracking state."""
-        if not self.is_active():
-            return None
-            
-        success, frame = self.camera.read()
-        if not success:
+        """Clean up hand resources."""
+        try:
+            if hasattr(self, 'hands') and self.hands:
+                self.hands.close()
+                self.hands = None
+            if hasattr(self, 'camera') and self.camera:
+                self.camera.release()
+                self.camera = None
+
             self._active = False
+            self._processing_enabled = False
+
+        except Exception as e:
+                self.logger.warning(f"Error during cleanup: {e}")
+    
+    def enable_processing(self) -> None:
+        """Enable processing."""
+        self.logger.info("Hand Tracking processing enabled")
+        self._processing_enabled = True
+
+    def disable_processing(self) -> None:
+        """Disable processing."""
+        self.logger.info("Hand Tracking processing disabled")
+        self._processing_enabled = False
+    
+    def process(self, *args: Any, **kwargs: Any) -> Optional[np.ndarray]:
+        """Process the current frame and update hand tracking state.
+
+        Returns:
+            The camera frame (with debug overlays if draw_debug=True),
+            or None if the camera read fails or not active.
+        """
+        if not self._active or not self._processing_enabled:
             return None
             
-        # Mirror if configured
-        if self.config.mirror_camera:
-            frame = cv2.flip(frame, 1)
+        try:
+            success, frame = self.camera.read()
+            if not success or frame is None:
+                return None
+                
+            if self.config.mirror_camera:
+                frame = cv2.flip(frame, 1)
             
-        # Convert and process frame
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.hands.process(rgb_frame)
-        
-        # Handle hand detection state change
-        if results.multi_hand_landmarks:
-            if not self.hand_detected:
-                self.hand_detected = True
-                self.event_bus.publish(GameEventType.HAND_DETECTED)
+            # Process frame with MediaPipe
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.hands.process(rgb_frame)
             
             # Process hand landmarks
-            hand_landmarks = results.multi_hand_landmarks[0]
-            
-            # Convert to HandPoint
-            h, w, _ = frame.shape
-            index_tip = hand_landmarks.landmark[8]
-            hand_point = HandPoint(
-                x=index_tip.x,
-                y=index_tip.y,
-                z=index_tip.z
-            )
-            
-            # Update drawing tracker
-            smoothed_pos = self.drawing_tracker.update(hand_point, self.is_drawing)
-            
-            if smoothed_pos:
-                # Update position and publish event
-                self.last_position = smoothed_pos
-                self.event_bus.publish(
-                    GameEventType.HAND_POSITION_UPDATED,
-                    {"position": smoothed_pos}
+            if results.multi_hand_landmarks:
+                if not self.hand_detected:
+                    self.hand_detected = True
+                    self.event_bus.publish(GameEventType.HAND_DETECTED)
+                
+                # Get index fingertip position (landmark 8)
+                landmarks = results.multi_hand_landmarks[0].landmark
+                index_tip = landmarks[8]
+                
+                # Convert to pixel coordinates
+                h, w = frame.shape[:2]
+                x = int(index_tip.x * w)
+                y = int(index_tip.y * h)
+                
+                # Update position with smoother transitions
+                self.last_position = (x, y)
+                
+                # Create and publish hand point
+                hand_point = HandPoint(
+                    x=index_tip.x,
+                    y=index_tip.y,
+                    z=index_tip.z
                 )
                 
-                # Update drawing if active
-                if self.is_drawing:
-                    self._update_drawing()
-                
-                # Draw debug visualization
-                if self.config.draw_debug:
-                    color = (0, 255, 0) if self.is_drawing else (0, 0, 255)
-                    cv2.circle(frame, smoothed_pos, 5, color, -1)
-                    
-        elif self.hand_detected:
-            self.hand_detected = False
-            self.last_position = None
-            self.event_bus.publish(GameEventType.HAND_LOST)
-        
-        # Combine frame and drawing canvas
-        return cv2.addWeighted(frame, 1.0, self.canvas, 0.7, 0)
-        
-    def _update_drawing(self) -> None:
-        """Update the drawing canvas using trail points from tracker."""
-        trail_points = self.drawing_tracker.get_trail_points()
-        if len(trail_points) > 1:
-            cv2.line(
-                self.canvas,
-                trail_points[-2],
-                trail_points[-1],
-                (0, 255, 0),
-                4
-            )
-        
+                # Publish position update with additional context
+                self.event_bus.publish(
+                    GameEventType.HAND_POSITION_UPDATED,
+                    {
+                        "position": hand_point,
+                        "is_drawing": self.is_drawing,
+                        "frame_dimensions": (w, h)
+                    }
+                )
+            else:
+                if self.hand_detected:
+                    self.hand_detected = False
+                    self.last_position = None
+                    self.event_bus.publish(GameEventType.HAND_LOST)
+            
+            # Draw debug visualization if enabled
+            if self.config.draw_debug:
+                frame = self._draw_debug(frame, results)
+            
+            return frame
+            
+        except Exception as e:
+            self.logger.error(f"Error processing frame: {e}")
+            return None
+    
+    def _draw_debug(self, frame: np.ndarray, results: Any) -> np.ndarray:
+        """Draw debug info (only index finger tip) on the BGR frame."""
+        debug_frame = frame.copy()
+        if results and results.multi_hand_landmarks:
+            # Only draw index finger tip (landmark 8)
+            if self.last_position:
+                # Convert normalized coordinates to pixel coordinates for drawing
+                h, w = frame.shape[:2]
+                x = int(self.last_position[0] * w)
+                y = int(self.last_position[1] * h)
+                color = (0, 255, 0) if self.is_drawing else (0, 0, 255)
+                cv2.circle(debug_frame, (x, y), 5, color, -1)
+        return debug_frame
+            
+    def _handle_drawing_event(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
+        """Handle drawing state change events."""
+        self.is_drawing = (event_type == GameEventType.DRAWING_STARTED)
+        self.logger.info(f"Drawing state changed to: {self.is_drawing}")
+
     def set_drawing_state(self, is_drawing: bool) -> None:
-        """Set the drawing state and publish appropriate event."""
+        """Enable or disable drawing mode."""
         if self.is_drawing != is_drawing:
             self.is_drawing = is_drawing
-            event_type = (
-                GameEventType.DRAWING_STARTED if is_drawing 
-                else GameEventType.DRAWING_ENDED
-            )
+            event_type = (GameEventType.DRAWING_STARTED if is_drawing 
+                          else GameEventType.DRAWING_ENDED)
             self.event_bus.publish(event_type)
-            
-    def clear_canvas(self) -> None:
-        """Clear the drawing canvas and tracker state."""
-        self.canvas.fill(0)
-        self.drawing_tracker.clear()

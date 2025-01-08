@@ -1,110 +1,144 @@
 # hand_drawing_challenge/input/manager.py
+
+import logging
 from typing import Dict, Optional
 import numpy as np
 from ..events.bus import EventBus
 from ..events.types import GameEventType
 from .interfaces import InputProcessor
+from .processors.hand_tracking import HandTrackingProcessor, HandProcessorConfig
 
 class InputManager:
     """Manages and coordinates multiple input processors."""
     
     def __init__(self, event_bus: EventBus, camera_id: int = 0):
-        """Initialize input manager.
+        """Initialize input manager."""
+        self.logger = logging.getLogger(__name__)
+        self.logger.info("Creating InputManager")
         
-        Args:
-            event_bus: Event bus for publishing events
-        """
         self.event_bus = event_bus
         self.processors: Dict[str, InputProcessor] = {}
         self.is_processing = False
-        self.camera_id = camera_id
-        self.current_frame = None
+        self.current_frame: Optional[np.ndarray] = None
+        self._started = False  # Track if already started
         
         # Subscribe to game events
         self.event_bus.subscribe(GameEventType.GAME_ENDED, self._handle_game_end)
+        
+        # Initialize hand tracking
+        self._init_hand_tracking(camera_id)
+    
+    def _init_hand_tracking(self, camera_id: int) -> None:
+        """Initialize hand tracking processor."""
+        try:
+            self.logger.debug("Initializing HandTrackingProcessor")
+            config = HandProcessorConfig(
+                camera_width=640,
+                camera_height=480,
+                camera_id=camera_id,
+                mirror_camera=True,
+                draw_debug=True
+            )
+            
+            self.hand_tracker = HandTrackingProcessor(
+                event_bus=self.event_bus,
+                config=config
+            )
+            
+            self.register_processor("hand_tracking", self.hand_tracker)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize hand tracking: {e}")
+            raise
     
     def register_processor(self, name: str, processor: InputProcessor) -> None:
-        """Register an input processor.
-        
-        Args:
-            name: Unique identifier for the processor
-            processor: Input processor instance
-        """
+        """Register an input processor."""
         if name in self.processors:
-            # Clean up existing processor if being replaced
+            self.logger.debug(f"Replacing existing processor {name}")
             self.unregister_processor(name)
-            
+        
+        self.logger.debug(f"Registering processor '{name}': {processor}")
         self.processors[name] = processor
-        
+        self.logger.info(f"Successfully registered processor {name}")
+    
     def unregister_processor(self, name: str) -> None:
-        """Remove an input processor.
-        
-        Args:
-            name: Name of processor to remove
-        """
+        """Remove an input processor."""
         if name in self.processors:
             processor = self.processors[name]
+            self.logger.debug(f"Unregistering processor '{name}'")
+            processor.stop()
             processor.cleanup()
             del self.processors[name]
     
     def get_processor(self, name: str) -> Optional[InputProcessor]:
-        """Get a registered processor by name.
-        
-        Args:
-            name: Name of processor to retrieve
-            
-        Returns:
-            InputProcessor if found, None otherwise
-        """
+        """Get a registered processor by name."""
         return self.processors.get(name)
     
     def start(self) -> None:
         """Start all registered processors."""
-        for processor in self.processors.values():
-            processor.start()
-
+        if self._started:
+            self.logger.debug("InputManager already started, ignoring start request")
+            return
+            
+        self.logger.info("Starting input processing")
+        try:
+            for name, processor in self.processors.items():
+                self.logger.debug(f"Starting processor {name}")
+                processor.start()
+                processor.enable_processing()
+            
+            self.is_processing = True
+            self._started = True
+            
+        except Exception as e:
+            self.logger.error(f"Error starting input processing: {e}")
+            self.stop()
+            raise
+    
     def stop(self) -> None:
         """Stop all registered processors."""
-        for processor in self.processors.values():
-            processor.stop()
-        self.cleanup()
-
-    def get_frame(self) -> Optional[np.ndarray]:
-        """Get the most recent camera frame.
+        self.logger.info("Stopping input processing")
+        self.is_processing = False
+        self._started = False
         
-        Returns:
-            np.ndarray or None: Current camera frame if available
-        """
-        return self.current_frame
-
+        for name, processor in self.processors.items():
+            try:
+                self.logger.debug(f"Stopping processor {name}")
+                processor.disable_processing()
+                processor.stop()
+            except Exception as e:
+                self.logger.error(f"Error stopping processor {name}: {e}")
+    
     def process_input(self) -> None:
         """Process input from all active processors."""
-        if self.is_processing:
-            return  # Prevent recursive processing
+        if not self.is_processing:
+            return
             
         try:
-            self.is_processing = True
-            for processor in self.processors.values():
+            for name, processor in self.processors.items():
                 if processor.is_active():
-                    try:
-                        result = processor.process()
-                        if result is not None:
-                            self.current_frame = result
-                    except Exception as e:
-                        print(f"Error in processor: {e}")
-                        # Optionally emit error event
-                        self.event_bus.publish(
-                            GameEventType.INPUT_ERROR,
-                            {"error": str(e)}
-                        )
-        finally:
-            self.is_processing = False
+                    frame_result = processor.process()
+                    if frame_result is not None:
+                        self.current_frame = frame_result
+                        
+        except Exception as e:
+            self.logger.error(f"Error processing input: {e}")
+    
+    def get_frame(self) -> Optional[np.ndarray]:
+        """Get the most recent camera frame."""
+        return self.current_frame
     
     def cleanup(self) -> None:
         """Clean up all processors."""
+        self.logger.info("Cleaning up input manager")
         for name in list(self.processors.keys()):
-            self.unregister_processor(name)
+            try:
+                self.unregister_processor(name)
+            except Exception as e:
+                self.logger.error(f"Error cleaning up processor {name}: {e}")
     
     def _handle_game_end(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
-        """Handle game end event by cleaning up processors."""
+        """Handle game end event."""
+        self.logger.info("Handling game end event")
+        self.stop()
         self.cleanup()

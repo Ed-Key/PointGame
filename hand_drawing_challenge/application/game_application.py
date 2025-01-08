@@ -1,120 +1,170 @@
-# hand_drawing_challenge/application/game_application.py
-
 import time
+import logging
 import pygame
 from typing import Optional
+from .config import GameConfig
 from ..events.bus import EventBus
 from ..events.types import GameEventType
 from ..engine.game_engine import GameEngine
-from ..input.manager import InputManager
 from ..ui.manager import UIManager
 from ..engine.modes.menu_mode import MenuMode
-from .config import GameConfig
 
 class GameApplication:
     """Main application class that coordinates game components."""
-
+    
     def __init__(self, config: Optional[GameConfig] = None):
         """Initialize the game application."""
-        self.config = config or GameConfig()
-        self.event_bus = EventBus()
+        logging.basicConfig(level=logging.INFO)
+        self.logger = logging.getLogger(__name__)
+        
+        try:
+            self.logger.info("Initializing game application")
+            
+            # Initialize core systems
+            self.config = config or GameConfig()
+            self.event_bus = EventBus()
+            
+            # Initialize pygame
+            pygame.init()
+            pygame.font.init()
+            
+            # Initialize UI manager first (will create input manager)
+            self.ui_manager = UIManager(self.event_bus, self.config.screen_size)
+            
+            # Initialize engine with UI manager
+            self.engine = GameEngine(self.event_bus, self.ui_manager)
 
-        # Initialize major subsystems
-        self.engine = GameEngine(self.event_bus)
-        self.ui_manager = UIManager(self.event_bus, self.config.screen_size)
-        self.input_manager = InputManager(self.event_bus, self.config.camera_device)
+            self.ui_manager.start_input_processing()
 
-        # Application state
-        self.is_running = False
-        self.last_update = None
-        self.clock = pygame.time.Clock()
-
-        # Register for events
-        self.event_bus.subscribe(GameEventType.GAME_ENDED, self._handle_game_end)
-        self.event_bus.subscribe(GameEventType.GAME_MODE_SELECTED, self._handle_mode_selected)
-
+            
+            # Application state
+            self.is_running = False
+            self.last_update = None
+            self.clock = pygame.time.Clock()
+            
+            # Register for events
+            self.event_bus.subscribe(GameEventType.GAME_ENDED, self._handle_game_end)
+            self.event_bus.subscribe(GameEventType.GAME_MODE_SELECTED, self._handle_mode_selected)
+            
+        except Exception as e:
+            self.logger.critical(f"Failed to initialize game application: {e}")
+            self.cleanup()
+            raise
+    
     def start(self, test_mode: bool = False) -> None:
         """Start the game application."""
         if self.is_running:
             return
-
+            
         try:
+            self.logger.info("Starting game application")
             self.is_running = True
             self.last_update = time.time()
-
-            # Initialize engine (this will start in menu mode)
+            
+            # Initialize engine
             self.engine.initialize()
-
-            # Start input processing if needed
-            if not isinstance(self.engine.current_mode, MenuMode):
-                self.input_manager.start()
-
+            
             # Main game loop
             if not test_mode:
                 while self.is_running:
                     self._process_frame()
                     self.clock.tick(self.config.fps)
-
+                    
         except Exception as e:
-            print(f"Error in game loop: {e}")
+            self.logger.error(f"Error in game loop: {e}")
             self.stop()
-
+            
+        finally:
+            self.cleanup()
+    
     def _process_frame(self) -> None:
-        """Process a single frame."""
-        # Process all pygame events
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.stop()
-                return
-            # Let current mode handle the event
-            if self.engine.current_mode:
-                self.engine.current_mode.handle_input(event)
+        """Process a single frame of the game loop."""
+        try:
+            # Process all pygame events
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.stop()
+                    return
+                # Let current mode handle the event
+                if self.engine.current_mode:
+                    self.engine.current_mode.handle_input(event)
 
-        # Calculate delta time
-        current_time = time.time()
-        delta_time = current_time - self.last_update
-        self.last_update = current_time
-
-        # Update engine and current mode
-        self.engine.update(delta_time)
-
-        # Only process input and update UI for non-menu modes
-        if not isinstance(self.engine.current_mode, MenuMode):
-            self.input_manager.process_input()
-            frame = self.input_manager.get_frame()
-            if frame is not None:
-                self.ui_manager.update_frame(frame)
-            self.ui_manager.update(delta_time)
-            self.ui_manager.render()
-
-        # Update display
-        pygame.display.flip()
-
-    def _handle_mode_selected(self, event_type: GameEventType, data: dict) -> None:
-        """Handle game mode selection."""
-        mode = data.get("mode")
-        if mode:
-            # Start input processing when transitioning from menu to game mode
-            self.input_manager.start()
-
+            # Calculate delta time
+            current_time = time.time()
+            delta_time = current_time - self.last_update
+            self.last_update = current_time
+            
+            # Update engine and UI components
+            self.engine.update(delta_time)
+            
+            # Update UI and display
+            if not isinstance(self.engine.current_mode, MenuMode):
+                self.ui_manager.update(delta_time)
+                self.ui_manager.render()
+            
+            # Update display
+            pygame.display.flip()
+            
+        except Exception as e:
+            self.logger.error(f"Error processing frame: {e}")
+            # Continue running unless critical error
+    
+    def _handle_mode_selected(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
+        """Handle game mode selection event."""
+        try:
+            mode = data.get("mode")
+            if mode:
+                # Stop input processing if we're returning to menu
+                if mode == "menu":
+                    self.logger.info("Returning to menu, stopping input processing")
+                    self.ui_manager.stop_input_processing()
+                # Don't start input processing here - let the game mode handle it
+        except Exception as e:
+            self.logger.error(f"Error handling mode selection: {e}")
+    
     def stop(self) -> None:
         """Stop the game application."""
         if not self.is_running:
             return
-
+            
         try:
+            self.logger.info("Stopping game application")
             self.is_running = False
             self.event_bus.publish(GameEventType.GAME_ENDED)
-            self.input_manager.stop()
-            self.cleanup()
+            self.ui_manager.stop_input_processing()
+            
         except Exception as e:
-            print(f"Error during shutdown: {e}")
-
+            self.logger.error(f"Error during shutdown: {e}")
+            
+        finally:
+            self.cleanup()
+    
     def cleanup(self) -> None:
-        """Clean up resources."""
-        self.event_bus.clear_subscribers()
-        self.input_manager.cleanup()
-
+        """Clean up application resources."""
+        try:
+            self.logger.info("Cleaning up resources")
+            
+            # Clean up subsystems
+            if hasattr(self, 'event_bus'):
+                self.event_bus.clear_subscribers()
+            
+            if hasattr(self, 'ui_manager'):
+                self.ui_manager.cleanup()
+            
+            if hasattr(self, 'engine'):
+                self.engine.cleanup()
+            
+            # Quit pygame
+            pygame.quit()
+            
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
+    
     def _handle_game_end(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
         """Handle game end event."""
+        self.logger.info("Handling game end event")
         self.is_running = False
+    
+    def get_fps(self) -> float:
+        """Get current frames per second."""
+        return self.clock.get_fps()
