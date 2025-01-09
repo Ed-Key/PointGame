@@ -1,5 +1,6 @@
 # hand_drawing_challenge/events/bus.py
 
+import logging
 from typing import Dict, List, Optional, Any
 from collections import defaultdict
 from hand_drawing_challenge.events.types import GameEventType, EventHandler
@@ -23,6 +24,7 @@ class EventBus:
     
     def __init__(self):
         """Initialize the event bus with empty subscriber lists."""
+        self.logger = logging.getLogger(__name__)
         self._subscribers: Dict[GameEventType, List[EventHandler]] = defaultdict(list)
     
     def subscribe(self, event_type: GameEventType, handler: EventHandler) -> None:
@@ -63,7 +65,7 @@ class EventBus:
                 handler(event_type, data)
             except Exception as e:
                 # In a production system, you'd want to log this
-                print(f"Error in event handler: {e}")
+                self.logger.error(f"Error in event handler: {e}")
 
     def clear_subscribers(self, event_type: Optional[GameEventType] = None) -> None:
         """
@@ -72,7 +74,20 @@ class EventBus:
         Args:
             event_type: Optional event type to clear subscribers for
         """
-        if event_type:
-            self._subscribers[event_type].clear()
-        else:
+        try:
+            if event_type:
+                self.logger.debug(f"Clearing subscribers for event type: {event_type}")
+                self._subscribers[event_type].clear()
+            else:
+                self.logger.debug("Clearing all subscribers")
+                self._subscribers.clear()
+        except Exception as e:
+            self.logger.error(f"Error clearing subscribers: {e}")
+            
+    def cleanup(self) -> None:
+        """Clean up event bus resources."""
+        try:
+            self.logger.debug("Cleaning up event bus")
             self._subscribers.clear()
+        except Exception as e:
+            self.logger.error(f"Error during event bus cleanup: {e}")

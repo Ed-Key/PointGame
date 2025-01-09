@@ -36,11 +36,11 @@ class GameApplication:
 
             self.ui_manager.start_input_processing()
 
-            
             # Application state
             self.is_running = False
             self.last_update = None
             self.clock = pygame.time.Clock()
+            self._cleanup_done = False
             
             # Register for events
             self.event_bus.subscribe(GameEventType.GAME_ENDED, self._handle_game_end)
@@ -130,8 +130,14 @@ class GameApplication:
         try:
             self.logger.info("Stopping game application")
             self.is_running = False
-            self.event_bus.publish(GameEventType.GAME_ENDED)
-            self.ui_manager.stop_input_processing()
+            
+            # First stop input processing
+            if hasattr(self, 'ui_manager'):
+                self.ui_manager.stop_input_processing()
+            
+            # Then publish game ended event
+            if hasattr(self, 'event_bus'):
+                self.event_bus.publish(GameEventType.GAME_ENDED)
             
         except Exception as e:
             self.logger.error(f"Error during shutdown: {e}")
@@ -141,21 +147,35 @@ class GameApplication:
     
     def cleanup(self) -> None:
         """Clean up application resources."""
+        # Guard against multiple cleanups
+        if getattr(self, '_cleanup_done', False):
+            return
+            
         try:
             self.logger.info("Cleaning up resources")
             
-            # Clean up subsystems
+            # First unsubscribe from our own events
             if hasattr(self, 'event_bus'):
-                self.event_bus.clear_subscribers()
+                self.event_bus.unsubscribe(GameEventType.GAME_ENDED, self._handle_game_end)
+                self.event_bus.unsubscribe(GameEventType.GAME_MODE_SELECTED, self._handle_mode_selected)
             
-            if hasattr(self, 'ui_manager'):
-                self.ui_manager.cleanup()
-            
+            # Then cleanup engine (which will unsubscribe its events)
             if hasattr(self, 'engine'):
                 self.engine.cleanup()
             
-            # Quit pygame
+            # Then cleanup UI manager (which handles input cleanup)
+            if hasattr(self, 'ui_manager'):
+                self.ui_manager.cleanup()
+            
+            # Finally clear all remaining subscribers and null event bus
+            if hasattr(self, 'event_bus'):
+                self.event_bus.clear_subscribers()
+                self.event_bus = None
+            
+            # Quit pygame last
             pygame.quit()
+            
+            self._cleanup_done = True
             
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")

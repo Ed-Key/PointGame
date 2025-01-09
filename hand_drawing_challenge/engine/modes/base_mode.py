@@ -47,3 +47,7 @@ class GameMode(ABC):
     def stop(self) -> None:
         """Stop the game mode and cleanup resources."""
         self.is_active = False
+        self.score = 0
+        # Clear event bus reference
+        if hasattr(self, 'event_bus'):
+            self.event_bus = None

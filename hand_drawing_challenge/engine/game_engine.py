@@ -169,9 +169,20 @@ class GameEngine:
         """
         try:
             self.logger.info("Cleaning up game engine resources")
+            
+            # First stop current mode
             if self.current_mode:
                 self.current_mode.stop()
-            self.event_bus.clear_subscribers()
+                self.current_mode = None
+            
+            # Then unsubscribe from specific events
+            if self.event_bus:
+                self.event_bus.unsubscribe(GameEventType.GAME_ENDED, self._handle_game_end)
+                self.event_bus.unsubscribe(GameEventType.GAME_MODE_SELECTED, self._handle_mode_selected)
+                self.event_bus.unsubscribe(GameEventType.MENU_BACK, self._handle_menu_return)
+                self.event_bus.clear_subscribers()
+                self.event_bus = None
+                
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
             

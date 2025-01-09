@@ -160,21 +160,37 @@ class HandTrackingProcessor(InputProcessor):
         """Final cleanup - only called when application exits."""
         self.logger.info("Cleaning up hand tracking processor")
         try:
+            # First disable processing and reset state
+            self._processing_enabled = False
+            self.hand_detected = False
+            self.last_position = None
+            self._camera_initialized = False
+            
+            # Unsubscribe from events
+            if self.event_bus:
+                self.event_bus.unsubscribe(GameEventType.DRAWING_STARTED, self._handle_drawing_event)
+                self.event_bus.unsubscribe(GameEventType.DRAWING_ENDED, self._handle_drawing_event)
+                self.event_bus = None
+            
+            # Then close MediaPipe resources
             if self.hands:
                 self.hands.close()
                 self.hands = None
             
+            # Finally release camera
             if self.camera:
                 self.camera.release()
                 self.camera = None
             
-            self._camera_initialized = False
-            self._processing_enabled = False
-            self.hand_detected = False
-            self.last_position = None
-            
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
+            # Ensure camera is released even if MediaPipe cleanup fails
+            if self.camera:
+                try:
+                    self.camera.release()
+                except:
+                    pass
+                self.camera = None
     
     def enable_processing(self) -> None:
         """Enable frame processing."""

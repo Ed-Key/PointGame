@@ -22,9 +22,6 @@ class InputManager:
         self.current_frame: Optional[np.ndarray] = None
         self._started = False  # Track if already started
         
-        # Subscribe to game events
-        self.event_bus.subscribe(GameEventType.GAME_ENDED, self._handle_game_end)
-        
         # Initialize hand tracking
         self._init_hand_tracking(camera_id)
     
@@ -131,14 +128,17 @@ class InputManager:
     def cleanup(self) -> None:
         """Clean up all processors."""
         self.logger.info("Cleaning up input manager")
+        
+        # First stop processing
+        self.is_processing = False
+        self._started = False
+        
+        # Then clean up processors
         for name in list(self.processors.keys()):
             try:
                 self.unregister_processor(name)
             except Exception as e:
                 self.logger.error(f"Error cleaning up processor {name}: {e}")
-    
-    def _handle_game_end(self, event_type: GameEventType, data: Optional[dict] = None) -> None:
-        """Handle game end event."""
-        self.logger.info("Handling game end event")
-        self.stop()
-        self.cleanup()
+        
+        # Finally clear event bus reference
+        self.event_bus = None

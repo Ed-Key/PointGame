@@ -145,11 +145,28 @@ class UIManager:
 
     def cleanup(self) -> None:
         """Clean up all resources."""
-        if hasattr(self, 'renderer'):
-            self.renderer.cleanup()
-        if hasattr(self, 'input_manager'):
-            self.input_manager.cleanup()
-        self.components.clear()
+        try:
+            # First unsubscribe from all events
+            if hasattr(self, 'event_bus'):
+                self.event_bus.unsubscribe(GameEventType.GAME_ENDED, self._handle_game_end)
+                self.event_bus.unsubscribe(GameEventType.MENU_BACK, self._handle_menu_back)
+                self.event_bus.unsubscribe(GameEventType.HAND_POSITION_UPDATED, self._handle_hand_position)
+            
+            # Then cleanup components in order
+            if hasattr(self, 'input_manager'):
+                self.input_manager.cleanup()
+                
+            if hasattr(self, 'renderer'):
+                self.renderer.cleanup()
+                
+            self.components.clear()
+            
+            # Finally null event bus reference
+            if hasattr(self, 'event_bus'):
+                self.event_bus = None
+                
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
 
     def start_input_processing(self) -> None:
         """Start input processing."""

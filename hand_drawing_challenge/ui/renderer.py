@@ -44,5 +44,7 @@ class Renderer:
         return self.screen
     
     def cleanup(self) -> None:
-        """Clean up pygame resources."""
-        pygame.quit()
+        """Clean up renderer resources."""
+        # Clear references
+        self.screen = None
+        self.screen_size = None

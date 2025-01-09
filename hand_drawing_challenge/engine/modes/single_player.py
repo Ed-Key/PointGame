@@ -135,7 +135,30 @@ class SinglePlayerMode(GameMode):
         """Stop the game mode."""
         self.logger.info("Stopping single player mode")
         
-        if self.ui_manager:
-            self.ui_manager.stop_input_processing()
-        
-        super().stop()
+        try:
+            # First stop input processing
+            if self.ui_manager:
+                self.ui_manager.stop_input_processing()
+            
+            # Clear game state
+            self.is_drawing = False
+            self.score = 0
+            self.round_count = 0
+            self.current_pattern = None
+            
+            # Clear UI references
+            if self.canvas:
+                self.canvas.clear()
+                self.canvas = None
+            
+            # Clean up pattern manager
+            if hasattr(self, 'pattern_manager'):
+                self.pattern_manager = None
+            
+            # Clear manager references
+            self.ui_manager = None
+            
+            super().stop()
+            
+        except Exception as e:
+            self.logger.error(f"Error stopping single player mode: {e}")
